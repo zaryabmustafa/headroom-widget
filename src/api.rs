@@ -35,6 +35,8 @@ pub struct Usage {
     pub weekly: Option<Limit>,
     /// Fable's own weekly limit, on plans that have one.
     pub fable: Option<Limit>,
+    /// Numbers came from a local log, not a live request (Codex fallback): show them dimmed.
+    pub from_log: bool,
 }
 
 pub enum FetchError {
@@ -287,6 +289,7 @@ fn parse_usage(v: &Value) -> Usage {
         has_five_hour: v["five_hour"].is_object(),
         weekly: limit("seven_day"),
         fable: fable_limit(v),
+        from_log: false,
     }
 }
 
@@ -305,7 +308,7 @@ fn fable_limit(v: &Value) -> Option<Limit> {
 }
 
 /// Parses e.g. "2026-11-11T14:10:00.320228+00:00" into unix seconds.
-fn parse_iso8601(s: &str) -> Option<i64> {
+pub(crate) fn parse_iso8601(s: &str) -> Option<i64> {
     let b = s.as_bytes();
     let num = |r: std::ops::Range<usize>| -> Option<i64> { s.get(r)?.parse().ok() };
     let (y, mo, d) = (num(0..4)?, num(5..7)?, num(8..10)?);

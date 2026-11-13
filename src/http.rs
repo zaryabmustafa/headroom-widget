@@ -45,7 +45,7 @@ pub fn request(
     unsafe {
         let session = check(
             WinHttpOpen(
-                wide("claude-usage-widget/1.0").as_ptr(),
+                wide("headroom/0.1").as_ptr(),
                 WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                 null(),
                 null(),

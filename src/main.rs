@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod api;
+mod codex;
 mod http;
 mod render;
 mod update;
@@ -37,6 +38,8 @@ const T_ROLL: usize = 5; // animation frames while numbers roll
 const ROLL_SECS: f32 = 0.45;
 const T_TICK: usize = 3; // refreshes tooltip countdowns
 const T_UPDATE: usize = 4; // one-shot: next check for a new release
+const T_RAM: usize = 6; // samples memory use
+const RAM_EVERY_MS: u32 = 2000;
 const T_FETCH_BASE: usize = 1000; // + account id, one-shot: that account's next fetch
 
 const ID_REFRESH: usize = 1;
@@ -57,6 +60,9 @@ const ID_HIDE_FIVE: usize = 16;
 const ID_HIDE_WEEK: usize = 17;
 const ID_HIDE_FABLE: usize = 18;
 const ID_CLAUDE_ICON: usize = 19;
+const ID_HIDE_CODEX: usize = 20;
+const ID_HIDE_RAM: usize = 21;
+const ID_OPEN_CODEX: usize = 22;
 const ID_ADD_ACCOUNT: usize = 7;
 const ID_REMOVE_BASE: usize = 300; // + index into accounts
 const ID_PER_COL_BASE: usize = 400; // + accounts per column (1 to 3)
@@ -92,9 +98,10 @@ const DEFAULT_ICON_SIZE: u32 = 18;
 use render::DEFAULT_FONT_SIZE;
 
 const USAGE_URL: &str = "https://claude.ai/settings/usage";
+const CODEX_USAGE_URL: &str = "https://chatgpt.com/codex/settings/usage";
 const RUN_KEY: *const u16 = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-const RUN_VALUE: *const u16 = w!("ClaudeUsageWidget");
-const SETTINGS_KEY: *const u16 = w!("Software\\ClaudeUsageWidget");
+const RUN_VALUE: *const u16 = w!("Headroom");
+const SETTINGS_KEY: *const u16 = w!("Software\\Headroom");
 
 #[derive(Clone, PartialEq)]
 struct RenderKey {
@@ -102,8 +109,12 @@ struct RenderKey {
     dpi: u32,
     dark: bool,
     hover: bool,
-    /// Per account: rounded 5-hour %, weekly %, Fable %, stale.
-    rows: Vec<(Option<i64>, Option<i64>, Option<i64>, bool, Option<u32>)>,
+    /// Per account: provider, rounded 5-hour %, weekly %, Fable %, stale, roll progress.
+    rows: Vec<(u8, Option<i64>, Option<i64>, Option<i64>, bool, Option<u32>)>,
+    /// Rounded memory use, when shown.
+    ram: Option<i64>,
+    hide_codex: bool,
+    hide_five_codex: bool,
     show_left: bool,
     font_size: u32,
     icon_size: u32,
@@ -118,11 +129,40 @@ struct RenderKey {
     rows_per_col: u32,
 }
 
-/// One Claude Code login, found in its config folder.
+/// Where an account's numbers come from.
+#[derive(Clone, Copy, PartialEq)]
+enum Provider {
+    Claude,
+    Codex,
+}
+
+impl Provider {
+    fn label(self, dir: &Path) -> String {
+        match self {
+            Provider::Claude => api::account_label(dir),
+            Provider::Codex => codex::account_label(dir),
+        }
+    }
+    fn fetch(self, dir: &Path) -> Result<api::Usage, api::FetchError> {
+        match self {
+            Provider::Claude => api::fetch(dir),
+            Provider::Codex => codex::fetch(dir),
+        }
+    }
+    fn name(self) -> &'static str {
+        match self {
+            Provider::Claude => "Claude Code",
+            Provider::Codex => "Codex",
+        }
+    }
+}
+
+/// One Claude Code or Codex login, found in its config folder.
 struct Account {
     /// Stable id; also picks the account's fetch timer.
     id: u32,
     dir: PathBuf,
+    kind: Provider,
     /// Email, or the folder name until it's known.
     label: String,
     usage: Option<api::Usage>,
@@ -136,13 +176,14 @@ struct Account {
 }
 
 impl Account {
-    fn new(id: u32, dir: PathBuf) -> Account {
-        let label = api::account_label(&dir);
-        Account { id, dir, label, usage: None, prev: None, last_ok: None, error: None, fetching: false, rate_limited: 0 }
+    fn new(id: u32, dir: PathBuf, kind: Provider) -> Account {
+        let label = kind.label(&dir);
+        Account { id, dir, kind, label, usage: None, prev: None, last_ok: None, error: None, fetching: false, rate_limited: 0 }
     }
 
     fn is_stale(&self) -> bool {
-        self.error.is_some() && self.last_ok.map_or(true, |t| now() - t > 600)
+        (self.error.is_some() && self.last_ok.map_or(true, |t| now() - t > 600))
+            || self.usage.is_some_and(|u| u.from_log)
     }
 }
 
@@ -183,6 +224,11 @@ struct State {
     hide_five: bool,
     hide_week: bool,
     hide_fable: bool,
+    /// Leave out the Codex section, or the RAM readout.
+    hide_codex: bool,
+    hide_ram: bool,
+    /// Memory: percent used, used bytes, total bytes.
+    ram: Option<(f64, u64, u64)>,
     /// Accounts stacked in each column of the widget.
     rows_per_col: u32,
     /// claude-swap's `cswap.exe`, found once at launch.
@@ -201,7 +247,7 @@ thread_local! {
         taskbar_created_msg: 0, accounts: Vec::new(), next_id: 0,
         hover: false, dark: false, rendered: None, pos: (0, 0, 0, 0),
         interval: DEFAULT_INTERVAL, show_left: false,
-        font_size: DEFAULT_FONT_SIZE, icon_size: DEFAULT_ICON_SIZE, hide_icon: false, hide_labels: false, on_left: false, pixel_icon: false, rings: false, ring_text: false, roll: false, hide_five: false, hide_week: false, hide_fable: false, rows_per_col: DEFAULT_PER_COL,
+        font_size: DEFAULT_FONT_SIZE, icon_size: DEFAULT_ICON_SIZE, hide_icon: false, hide_labels: false, on_left: false, pixel_icon: false, rings: false, ring_text: false, roll: false, hide_five: false, hide_week: false, hide_fable: false, hide_codex: false, hide_ram: false, ram: None, rows_per_col: DEFAULT_PER_COL,
         cswap: None, cswap_running: false, update: None, update_busy: None,
     });
 }
@@ -221,7 +267,7 @@ fn main() {
         let after_update = std::env::args().any(|a| a == update::UPDATED_ARG);
         let mut tries = 0;
         loop {
-            let m = CreateMutexW(null(), 0, w!("Local\\ClaudeUsageWidget.Singleton"));
+            let m = CreateMutexW(null(), 0, w!("Local\\Headroom.Singleton"));
             if GetLastError() != ERROR_ALREADY_EXISTS {
                 break;
             }
@@ -240,8 +286,8 @@ fn main() {
         let hinst = GetModuleHandleW(null());
         let cursor = LoadCursorW(null_mut(), IDC_ARROW);
         for (name, proc_) in [
-            (w!("ClaudeUsageCtl"), Some(ctl_proc as unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT)),
-            (w!("ClaudeUsageWidget"), Some(widget_proc as unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT)),
+            (w!("HeadroomCtl"), Some(ctl_proc as unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT)),
+            (w!("HeadroomWidget"), Some(widget_proc as unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT)),
         ] {
             let wc = WNDCLASSW {
                 lpfnWndProc: proc_,
@@ -261,7 +307,7 @@ fn main() {
         // Hidden top-level window: owns timers and receives broadcasts
         // (TaskbarCreated, theme changes) that a taskbar child would not.
         let ctl = CreateWindowExW(
-            WS_EX_TOOLWINDOW, w!("ClaudeUsageCtl"), w!("Claude Usage Widget"), WS_POPUP,
+            WS_EX_TOOLWINDOW, w!("HeadroomCtl"), w!("Headroom"), WS_POPUP,
             0, 0, 0, 0, null_mut(), null_mut(), hinst, null(),
         );
         let msg = RegisterWindowMessageW(w!("TaskbarCreated"));
@@ -289,20 +335,25 @@ fn main() {
             s.hide_five = read_setting("HideFiveHour") == Some(1);
             s.hide_week = read_setting("HideWeekly") == Some(1);
             s.hide_fable = read_setting("HideFable") == Some(1);
+            s.hide_codex = read_setting("HideCodex") == Some(1);
+            s.hide_ram = read_setting("HideRam") == Some(1);
             s.cswap = find_cswap();
             s.rows_per_col = read_setting("AccountsPerColumn")
                 .filter(|v| (1..=render::MAX_ROWS_PER_COLUMN as u32).contains(v))
                 .unwrap_or(DEFAULT_PER_COL);
-            for dir in load_account_dirs() {
+            for (dir, kind) in load_account_dirs() {
                 let id = s.next_id;
                 s.next_id += 1;
-                s.accounts.push(Account::new(id, dir));
+                s.accounts.push(Account::new(id, dir, kind));
             }
         });
+        sample_ram();
         ensure_widget();
         SetTimer(ctl, T_LAYOUT, 1000, None);
         SetTimer(ctl, T_TICK, 30_000, None);
-        SetTimer(ctl, T_UPDATE, UPDATE_FIRST_CHECK_MS, None);
+        SetTimer(ctl, T_RAM, RAM_EVERY_MS, None);
+        // No T_UPDATE: upstream releases would replace Headroom with the original widget.
+        let _ = UPDATE_FIRST_CHECK_MS;
         start_fetch_all();
 
         let mut m: MSG = std::mem::zeroed();
@@ -322,13 +373,13 @@ fn start_fetch(id: u32) {
             return None;
         }
         a.fetching = true;
-        Some((s.ctl as isize, a.dir.clone()))
+        Some((s.ctl as isize, a.dir.clone(), a.kind))
     });
-    let Some((ctl, dir)) = job else { return };
+    let Some((ctl, dir, kind)) = job else { return };
     unsafe { KillTimer(ctl as HWND, T_FETCH_BASE + id as usize) };
     std::thread::spawn(move || {
-        let r = api::fetch(&dir);
-        let label = api::account_label(&dir);
+        let r = kind.fetch(&dir);
+        let label = kind.label(&dir);
         let msg = Box::new(FetchResult { id, label, r });
         unsafe { PostMessageW(ctl as HWND, WM_APP_RESULT, 0, Box::into_raw(msg) as LPARAM) };
     });
@@ -390,6 +441,23 @@ fn backoff_secs(interval: u32, rate_limited: u32) -> u32 {
     grown.min(MAX_BACKOFF).max(interval)
 }
 
+/// Reads memory use. Returns true when the rounded percent changed.
+fn sample_ram() -> bool {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut ms: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    ms.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    if unsafe { GlobalMemoryStatusEx(&mut ms) } == 0 || ms.ullTotalPhys == 0 {
+        return false;
+    }
+    let used = ms.ullTotalPhys.saturating_sub(ms.ullAvailPhys);
+    let pct = used as f64 * 100.0 / ms.ullTotalPhys as f64;
+    with(|s| {
+        let changed = s.ram.map(|r| r.0.round() as i64) != Some(pct.round() as i64);
+        s.ram = Some((pct, used, ms.ullTotalPhys));
+        changed
+    })
+}
+
 // ---------- widget ----------
 
 /// Creates the widget inside the taskbar if needed, positions it just left of
@@ -407,7 +475,7 @@ fn ensure_widget() {
             }
             widget = CreateWindowExW(
                 WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                w!("ClaudeUsageWidget"), w!("Claude Usage"),
+                w!("HeadroomWidget"), w!("Headroom"),
                 WS_CHILD | WS_CLIPSIBLINGS,
                 0, 0, 1, 1, taskbar, null_mut(), GetModuleHandleW(null()), null(),
             );
@@ -437,41 +505,50 @@ fn ensure_widget() {
         let dpi = GetDpiForWindow(taskbar).max(96);
         let scale = dpi as f32 / 96.0;
 
-        let (key, needs_render, model) = with(|s| {
-            let rows: Vec<render::Row> = s
-                .accounts
-                .iter()
-                .map(|a| {
-                    let u = a.usage.unwrap_or_default();
-                    render::Row {
-                        five: u.five_hour.map(|l| l.percent),
-                        week: u.weekly.map(|l| l.percent),
-                        fable: u.fable.map(|l| l.percent),
-                        roll: a.prev.and_then(|(o, at)| {
-                            let t = at.elapsed().as_secs_f32() / ROLL_SECS;
-                            let pct = |l: Option<api::Limit>| l.map(|l| l.percent);
-                            (t < 1.0).then_some(([pct(o.five_hour), pct(o.weekly), pct(o.fable)], t))
-                        }),
-                        stale: a.is_stale(),
-                    }
-                })
-                .collect();
-            // Plans without a 5-hour limit (Ultra) report none: hide the group
-            // on its own once every loaded account says so.
-            let mut loaded = s.accounts.iter().filter_map(|a| a.usage).peekable();
-            let hide_five = s.hide_five || (loaded.peek().is_some() && loaded.all(|u| !u.has_five_hour));
+        let (key, needs_render, models, hover, dark) = with(|s| {
+            let row_of = |a: &Account| {
+                let u = a.usage.unwrap_or_default();
+                render::Row {
+                    five: u.five_hour.map(|l| l.percent),
+                    week: u.weekly.map(|l| l.percent),
+                    fable: u.fable.map(|l| l.percent),
+                    roll: a.prev.and_then(|(o, at)| {
+                        let t = at.elapsed().as_secs_f32() / ROLL_SECS;
+                        let pct = |l: Option<api::Limit>| l.map(|l| l.percent);
+                        (t < 1.0).then_some(([pct(o.five_hour), pct(o.weekly), pct(o.fable)], t))
+                    }),
+                    stale: a.is_stale(),
+                }
+            };
+            // Plans without a 5-hour limit report none: hide that group on
+            // its own once every loaded account of the provider says so.
+            let hide_five_for = |kind: Provider| {
+                let mut loaded = s.accounts.iter().filter(|a| a.kind == kind).filter_map(|a| a.usage).peekable();
+                s.hide_five || (loaded.peek().is_some() && loaded.all(|u| !u.has_five_hour))
+            };
+            let hide_five = hide_five_for(Provider::Claude);
+            let hide_five_codex = hide_five_for(Provider::Codex);
+            let rows_of = |kind: Provider| -> Vec<render::Row> {
+                s.accounts.iter().filter(|a| a.kind == kind).map(row_of).collect()
+            };
+            let ram = if s.hide_ram { None } else { s.ram.map(|r| r.0) };
+            let pct = |v: Option<f64>| v.map(|p| p.round() as i64);
             let key = RenderKey {
                 h,
                 dpi,
                 dark: s.dark,
                 hover: s.hover,
-                rows: rows
+                rows: s
+                    .accounts
                     .iter()
-                    .map(|r| {
-                        let pct = |v: Option<f64>| v.map(|p| p.round() as i64);
-                        (pct(r.five), pct(r.week), pct(r.fable), r.stale, r.roll.map(|(_, t)| (t * 1000.0) as u32))
+                    .map(|a| {
+                        let r = row_of(a);
+                        (a.kind as u8, pct(r.five), pct(r.week), pct(r.fable), r.stale, r.roll.map(|(_, t)| (t * 1000.0) as u32))
                     })
                     .collect(),
+                ram: pct(ram),
+                hide_codex: s.hide_codex,
+                hide_five_codex,
                 show_left: s.show_left,
                 font_size: s.font_size,
                 icon_size: s.icon_size,
@@ -485,30 +562,59 @@ fn ensure_widget() {
                 hide_fable: s.hide_fable,
                 rows_per_col: s.rows_per_col,
             };
-            let model = render::Model {
-                rows,
-                hover: s.hover,
-                dark: s.dark,
-                show_left: s.show_left,
-                font_size: s.font_size,
-                icon_size: s.icon_size,
-                hide_icon: s.hide_icon,
-                pixel_icon: s.pixel_icon,
-                rings: s.rings,
-                ring_text: s.ring_text,
-                hide_labels: s.hide_labels,
-                hide_five,
-                hide_week: s.hide_week,
-                hide_fable: s.hide_fable,
-                rows_per_col: s.rows_per_col as usize,
+            let model = |rows: Vec<render::Row>, mark: render::Mark, labels: [&'static str; 3], hide: [bool; 3], fixed: bool| {
+                render::Model {
+                    rows,
+                    hover: false, // drawn once, under all sections, by compose()
+                    dark: s.dark,
+                    show_left: s.show_left,
+                    font_size: s.font_size,
+                    icon_size: s.icon_size,
+                    mark,
+                    labels,
+                    fixed,
+                    rings: s.rings,
+                    ring_text: s.ring_text,
+                    hide_labels: s.hide_labels,
+                    hide_five: hide[0],
+                    hide_week: hide[1],
+                    hide_fable: hide[2],
+                    rows_per_col: s.rows_per_col as usize,
+                }
             };
+            let usage_labels = ["5h", "W", "F"];
+            let claude_mark = if s.hide_icon {
+                render::Mark::None
+            } else if s.pixel_icon {
+                render::Mark::Pixel
+            } else {
+                render::Mark::Claude
+            };
+            let codex_mark = if s.hide_icon { render::Mark::None } else { render::Mark::Codex };
+            let mut models = Vec::new();
+            let claude_rows = rows_of(Provider::Claude);
+            if !claude_rows.is_empty() {
+                models.push(model(claude_rows, claude_mark, usage_labels, [hide_five, s.hide_week, s.hide_fable], false));
+            }
+            let codex_rows = rows_of(Provider::Codex);
+            if !codex_rows.is_empty() && !s.hide_codex {
+                models.push(model(codex_rows, codex_mark, usage_labels, [hide_five_codex, s.hide_week, true], false));
+            }
+            if let Some(p) = ram {
+                let row = render::Row { five: Some(p), week: None, fable: None, roll: None, stale: false };
+                models.push(model(vec![row], render::Mark::None, ["RAM", "", ""], [false, true, true], true));
+            }
+            if models.is_empty() {
+                models.push(model(Vec::new(), claude_mark, usage_labels, [s.hide_five, s.hide_week, s.hide_fable], false));
+            }
             let changed = s.rendered.as_ref() != Some(&key);
-            (key, changed, model)
+            (key, changed, models, s.hover, s.dark)
         });
 
         let mut w = with(|s| s.pos.2);
         if needs_render {
-            let frame = render::render(&model, h, scale);
+            let frames: Vec<render::Frame> = models.iter().map(|m| render::render(m, h, scale)).collect();
+            let frame = render::compose(&frames, h, scale, dark, hover);
             w = frame.w;
             present(widget, &frame);
             with(|s| s.rendered = Some(key));
@@ -571,7 +677,7 @@ unsafe fn create_tooltip(widget: HWND) -> HWND {
         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
         widget, null_mut(), GetModuleHandleW(null()), null(),
     );
-    let mut text = wide("Claude usage");
+    let mut text = wide("Headroom");
     let ti = tool_info(widget, text.as_mut_ptr());
     SendMessageW(tip, TTM_ADDTOOLW, 0, &ti as *const _ as LPARAM);
     SendMessageW(tip, TTM_SETMAXTIPWIDTH, 0, 600);
@@ -601,15 +707,13 @@ fn update_tooltip() {
 }
 
 fn tooltip_text(s: &State) -> String {
-    let mut out = String::from("Claude usage");
-    let multi = s.accounts.len() > 1;
-    let indent = if multi { "  " } else { "" };
+    let mut out = String::from("Headroom");
     let line = |name: &str, l: Option<api::Limit>, with_day: bool| -> String {
         match l {
-            None => format!("\n{indent}{name}: –"),
+            None => format!("\n  {name}: –"),
             Some(l) => {
                 let used = l.percent.round().clamp(0.0, 100.0) as i64;
-                let mut t = format!("\n{indent}{name}: {used}% used, {}% left", 100 - used);
+                let mut t = format!("\n  {name}: {used}% used, {}% left", 100 - used);
                 if let Some(at) = l.resets_at {
                     t += &format!(
                         " · resets in {} ({})",
@@ -621,15 +725,11 @@ fn tooltip_text(s: &State) -> String {
             }
         }
     };
-    for (i, a) in s.accounts.iter().enumerate() {
-        if multi {
-            // Say where the account sits: columns top to bottom, then left to right.
-            let per = s.rows_per_col as usize;
-            out += &format!("\n\n{}. {}", i + 1, a.label);
-            if s.accounts.len() > per {
-                out += &format!(" (column {}, row {})", i / per + 1, i % per + 1);
-            }
+    for a in &s.accounts {
+        if a.kind == Provider::Codex && s.hide_codex {
+            continue;
         }
+        out += &format!("\n\n{} · {}", a.kind.name(), a.label);
         let u = a.usage.unwrap_or_default();
         if a.usage.is_some() {
             if u.has_five_hour {
@@ -639,15 +739,22 @@ fn tooltip_text(s: &State) -> String {
             if u.fable.is_some() {
                 out += &line("Fable (weekly)", u.fable, true);
             }
+            if u.from_log {
+                out += "\n  From Codex's logs (live once Codex refreshes its login)";
+            }
         }
         if let Some(t) = a.last_ok {
-            out += &format!("\n{indent}Updated {}", local_time(t, false));
+            out += &format!("\n  Updated {}", local_time(t, false));
         }
         if let Some(e) = &a.error {
-            out += &format!("\n{indent}⚠ {e}");
+            out += &format!("\n  ⚠ {e}");
         } else if a.usage.is_none() {
-            out += &format!("\n{indent}Loading…");
+            out += "\n  Loading…";
         }
+    }
+    if let (false, Some((pct, used, total))) = (s.hide_ram, s.ram) {
+        let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
+        out += &format!("\n\nRAM: {:.1} / {:.1} GB ({}%)", gb(used), gb(total), pct.round() as i64);
     }
     out
 }
@@ -761,26 +868,44 @@ fn write_string_setting(name: &str, v: &str) {
 // ---------- accounts ----------
 
 /// Saved account folders, separated by `|` (which paths can't contain).
-/// With nothing saved, the one account Claude Code uses by default.
-fn load_account_dirs() -> Vec<PathBuf> {
-    let dirs: Vec<PathBuf> = read_string_setting("Accounts")
-        .unwrap_or_default()
-        .split('|')
-        .filter(|d| !d.is_empty())
-        .map(PathBuf::from)
-        .collect();
-    if dirs.is_empty() {
-        vec![api::default_dir()]
-    } else {
-        dirs
+/// Claude: with nothing saved, the folder Claude Code uses by default.
+/// Codex: until the list is first saved, Codex's default folder if it holds a login.
+fn load_account_dirs() -> Vec<(PathBuf, Provider)> {
+    let split = |v: String| -> Vec<PathBuf> {
+        v.split('|').filter(|d| !d.is_empty()).map(PathBuf::from).collect()
+    };
+    let mut claude = split(read_string_setting("Accounts").unwrap_or_default());
+    if claude.is_empty() {
+        claude.push(api::default_dir());
     }
+    let codex = match read_string_setting("CodexAccounts") {
+        Some(v) => split(v),
+        None => {
+            let d = codex::default_dir();
+            if codex::has_login(&d) { vec![d] } else { Vec::new() }
+        }
+    };
+    claude
+        .into_iter()
+        .map(|d| (d, Provider::Claude))
+        .chain(codex.into_iter().map(|d| (d, Provider::Codex)))
+        .collect()
 }
 
 fn save_accounts() {
-    let joined = with(|s| {
-        s.accounts.iter().map(|a| a.dir.display().to_string()).collect::<Vec<_>>().join("|")
+    let (claude, codex) = with(|s| {
+        let join = |k: Provider| {
+            s.accounts
+                .iter()
+                .filter(|a| a.kind == k)
+                .map(|a| a.dir.display().to_string())
+                .collect::<Vec<_>>()
+                .join("|")
+        };
+        (join(Provider::Claude), join(Provider::Codex))
     });
-    write_string_setting("Accounts", &joined);
+    write_string_setting("Accounts", &claude);
+    write_string_setting("CodexAccounts", &codex);
 }
 
 fn same_dir(a: &Path, b: &Path) -> bool {
@@ -790,15 +915,15 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 
 unsafe fn message(text: &str, flags: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT {
     let ctl = with(|s| s.ctl);
-    MessageBoxW(ctl, wide(text).as_ptr(), w!("Claude Usage Widget"), flags | MB_SETFOREGROUND)
+    MessageBoxW(ctl, wide(text).as_ptr(), w!("Headroom"), flags | MB_SETFOREGROUND)
 }
 
 /// Asks for a folder with the standard Windows folder picker.
 unsafe fn pick_folder() -> Option<PathBuf> {
     let ctl = with(|s| s.ctl);
     let title = wide(
-        "Select the account's Claude Code folder (the one CLAUDE_CONFIG_DIR points to, \
-         e.g. .claude-work), or the user folder that contains .claude.",
+        "Select a Claude Code or Codex folder (what CLAUDE_CONFIG_DIR or CODEX_HOME points to, \
+         e.g. .claude-work), or the user folder that contains .claude or .codex.",
     );
     let bi = BROWSEINFOW {
         hwndOwner: ctl,
@@ -823,20 +948,24 @@ unsafe fn pick_folder() -> Option<PathBuf> {
 unsafe fn add_account() {
     let Some(picked) = pick_folder() else { return };
     // Accept the config folder itself, or a home folder holding `.claude`.
-    let dir = if api::has_login(&picked) {
-        picked
+    let (dir, kind) = if api::has_login(&picked) {
+        (picked, Provider::Claude)
     } else if api::has_login(&picked.join(".claude")) {
-        picked.join(".claude")
+        (picked.join(".claude"), Provider::Claude)
+    } else if codex::has_login(&picked) {
+        (picked, Provider::Codex)
+    } else if codex::has_login(&picked.join(".codex")) {
+        (picked.join(".codex"), Provider::Codex)
     } else {
         let text = format!(
-            "No Claude Code login found in\n{}\n\nAdd it anyway? It will show up once you sign in \
+            "No Claude Code or Codex login found in\n{}\n\nAdd it anyway? It will show up once you sign in \
              to Claude Code with this folder.",
             picked.display()
         );
         if message(&text, MB_YESNO | MB_ICONWARNING) != IDYES {
             return;
         }
-        picked
+        (picked, Provider::Claude)
     };
     if with(|s| s.accounts.iter().any(|a| same_dir(&a.dir, &dir))) {
         message("This account is already in the widget.", MB_OK | MB_ICONINFORMATION);
@@ -845,7 +974,7 @@ unsafe fn add_account() {
     let id = with(|s| {
         let id = s.next_id;
         s.next_id += 1;
-        s.accounts.push(Account::new(id, dir));
+        s.accounts.push(Account::new(id, dir, kind));
         id
     });
     save_accounts();
@@ -856,7 +985,7 @@ unsafe fn add_account() {
 
 unsafe fn remove_account(index: usize) {
     let Some(label) = with(|s| s.accounts.get(index).map(|a| a.label.clone())) else { return };
-    let text = format!("Remove {label} from the widget?\n\nThis doesn't sign it out of Claude Code.");
+    let text = format!("Remove {label} from the widget?\n\nThis doesn't sign it out.");
     if message(&text, MB_YESNO | MB_ICONQUESTION) != IDYES {
         return;
     }
@@ -1166,6 +1295,8 @@ unsafe fn show_menu() {
     AppendMenuW(limits, tick(ID_HIDE_WEEK), ID_HIDE_WEEK, w!("Weekly"));
     AppendMenuW(limits, tick(ID_HIDE_FABLE), ID_HIDE_FABLE, w!("Fable (weekly)"));
     AppendMenuW(custom, MF_POPUP, limits as usize, w!("Show/hide limits"));
+    AppendMenuW(custom, tick(ID_HIDE_CODEX), ID_HIDE_CODEX, w!("Show Codex"));
+    AppendMenuW(custom, tick(ID_HIDE_RAM), ID_HIDE_RAM, w!("Show RAM"));
     AppendMenuW(custom, tick(ID_ON_LEFT), ID_ON_LEFT, w!("Show on the left side"));
     // Only matters with more than one account.
     let n_accounts = with(|s| s.accounts.len());
@@ -1193,7 +1324,8 @@ unsafe fn show_menu() {
     AppendMenuW(menu, tick(ID_AUTOSTART), ID_AUTOSTART, w!("Start with Windows"));
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
     AppendMenuW(menu, MF_STRING, ID_REFRESH, w!("Refresh now"));
-    AppendMenuW(menu, MF_STRING, ID_OPEN, w!("Open usage page"));
+    AppendMenuW(menu, MF_STRING, ID_OPEN, w!("Open Claude usage page"));
+    AppendMenuW(menu, MF_STRING, ID_OPEN_CODEX, w!("Open Codex usage page"));
     // Only when claude-swap was installed at launch.
     let (cswap, running) = with(|s| (s.cswap.clone(), s.cswap_running));
     if cswap.is_some() {
@@ -1211,7 +1343,8 @@ unsafe fn show_menu() {
         (None, None) => "Check for updates".to_string(),
     };
     let update_flags = if busy.is_some() { MF_STRING | MF_GRAYED } else { MF_STRING };
-    AppendMenuW(menu, update_flags, ID_UPDATE, wide(&update_text).as_ptr());
+    // No "Check for updates": upstream releases would replace Headroom with the original widget.
+    let _ = (update_flags, update_text);
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
     AppendMenuW(menu, MF_STRING, ID_EXIT, w!("Exit"));
     refresh_menu(menu);
@@ -1238,6 +1371,7 @@ unsafe fn show_menu() {
             remove_account(id - ID_REMOVE_BASE);
         }
         ID_OPEN => open_usage_page(),
+        ID_OPEN_CODEX => open_url(CODEX_USAGE_URL),
         ID_CSWAP => {
             if let Some(exe) = cswap {
                 run_cswap_switch(exe);
@@ -1277,6 +1411,8 @@ fn setting_checked(id: usize) -> Option<bool> {
             ID_HIDE_FIVE => !s.hide_five,
             ID_HIDE_WEEK => !s.hide_week,
             ID_HIDE_FABLE => !s.hide_fable,
+            ID_HIDE_CODEX => !s.hide_codex,
+            ID_HIDE_RAM => !s.hide_ram,
             ID_HIDE_ICON => s.hide_icon,
             ID_CLAUDE_ICON => !s.hide_icon && !s.pixel_icon,
             ID_PIXEL_ICON => !s.hide_icon && s.pixel_icon,
@@ -1355,6 +1491,24 @@ fn apply_setting(id: usize) -> bool {
             });
             write_setting("HideFable", on as u32);
             ensure_widget();
+        }
+        ID_HIDE_CODEX => {
+            let on = with(|s| {
+                s.hide_codex = !s.hide_codex;
+                s.hide_codex
+            });
+            write_setting("HideCodex", on as u32);
+            ensure_widget();
+            update_tooltip();
+        }
+        ID_HIDE_RAM => {
+            let on = with(|s| {
+                s.hide_ram = !s.hide_ram;
+                s.hide_ram
+            });
+            write_setting("HideRam", on as u32);
+            ensure_widget();
+            update_tooltip();
         }
         ID_ON_LEFT => {
             let on = with(|s| {
@@ -1488,6 +1642,11 @@ unsafe extern "system" fn ctl_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                         KillTimer(hwnd, T_ROLL);
                     }
                     ensure_widget(); // the next frame, or the settled numbers
+                }
+                T_RAM => {
+                    if sample_ram() {
+                        ensure_widget();
+                    }
                 }
                 T_UPDATE => {
                     KillTimer(hwnd, T_UPDATE);

@@ -53,6 +53,18 @@ pub fn palette(dark: bool) -> Palette {
 const RING_BLUE: Rgba = Rgba(0.298, 0.608, 0.961, 1.0); // #4C9BF5
 pub const CLAUDE_ORANGE: Rgba = Rgba(0.851, 0.467, 0.341, 1.0); // #D97757
 
+/// The mark at the start of a section.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Mark {
+    None,
+    /// Claude's asterisk.
+    Claude,
+    /// Claude Code's pixel-art creature.
+    Pixel,
+    /// A terminal prompt, for Codex.
+    Codex,
+}
+
 /// One account's numbers.
 pub struct Row {
     pub five: Option<f64>,
@@ -78,10 +90,12 @@ pub struct Model {
     pub show_left: bool,
     /// Text size in pixels at 100% scaling.
     pub font_size: u32,
-    /// Leave out the Claude mark.
-    pub hide_icon: bool,
-    /// Draw the pixel-art mark instead of the asterisk.
-    pub pixel_icon: bool,
+    /// Which mark leads the section, if any.
+    pub mark: Mark,
+    /// Labels of the three groups: 5-hour, weekly, Fable for usage; "RAM" for memory.
+    pub labels: [&'static str; 3],
+    /// A plain measurement (RAM): never flipped to "remaining".
+    pub fixed: bool,
     /// Icon size in pixels at 100% scaling.
     pub icon_size: u32,
     /// Draw a progress ring for each limit.
@@ -184,6 +198,7 @@ struct Divider {
 /// Renders the widget for a taskbar of height `h` at `scale` (DPI / 96).
 pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
     let pal = palette(m.dark);
+    let show_left = m.show_left && !m.fixed;
     let s = |v: f32| (v * scale).round() as i32;
     let empty = [Row { five: None, week: None, fable: None, roll: None, stale: false }];
     let rows: &[Row] = if m.rows.is_empty() { &empty } else { &m.rows };
@@ -234,8 +249,9 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
         let dim = |stale: bool, c: Rgba| if stale { Rgba(c.0, c.1, c.2, c.3 * 0.5) } else { c };
         let all_stale = rows.iter().all(|r| r.stale);
         let pad_l = s(8.0);
-        let icon = if m.hide_icon { 0 } else { s(m.icon_size as f32).min(h) };
-        let gap_icon = if m.hide_icon { 0 } else { s(7.0) };
+        let no_mark = m.mark == Mark::None;
+        let icon = if no_mark { 0 } else { s(m.icon_size as f32).min(h) };
+        let gap_icon = if no_mark { 0 } else { s(7.0) };
         let gap_lv = if m.hide_labels { 0 } else { s(5.0) };
         let gap_div = s(10.0);
         let div_w = s(1.0).max(1);
@@ -252,7 +268,7 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
         let columns: Vec<&[Row]> = rows.chunks(rows_per_col).collect();
         for (ci, col) in columns.iter().enumerate() {
             // Line the column's rows up: each field is as wide as its widest value.
-            let labels = [enc("5h"), enc("W"), enc("F")];
+            let labels = [enc(m.labels[0]), enc(m.labels[1]), enc(m.labels[2])];
             // Which of 5h / week / Fable are shown, as indexes into `labels`.
             let ids: Vec<usize> = [!m.hide_five, !m.hide_week, !m.hide_fable && rows.iter().any(|r| r.fable.is_some())]
                 .iter()
@@ -267,7 +283,7 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
                 .collect();
             let values: Vec<Vec<Vec<u16>>> = col
                 .iter()
-                .map(|r| ids.iter().map(|&k| enc(&value_text([r.five, r.week, r.fable][k], m.show_left))).collect())
+                .map(|r| ids.iter().map(|&k| enc(&value_text([r.five, r.week, r.fable][k], show_left))).collect())
                 .collect();
             let mut value_w = vec![0; groups];
             for v in &values {
@@ -310,7 +326,7 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
                         // The ring shows the same quantity as the number.
                         let frac = |v: Option<f64>| {
                             let used = v.map_or(0.0, |q| q.round().clamp(0.0, 100.0) as f32 / 100.0);
-                            if v.is_some() && m.show_left { 1.0 - used } else { used }
+                            if v.is_some() && show_left { 1.0 - used } else { used }
                         };
                         let to = frac(val);
                         rings.push(Ring {
@@ -325,7 +341,7 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
                     let color = dim(row.stale, color);
                     let old = row
                         .roll
-                        .map(|(from, _)| enc(&value_text(from[ids[g]], m.show_left)))
+                        .map(|(from, _)| enc(&value_text(from[ids[g]], show_left)))
                         .filter(|o| *o != vals[g]);
                     let Some(old) = old else {
                         let vw = measure(&vals[g], vf);
@@ -475,13 +491,20 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
             }
         }
 
-        // Claude mark.
+        // Section mark.
         let iy = (h - icon) / 2;
-        let mark = if m.pixel_icon { draw_pixel_mark(icon) } else { draw_mark(icon) };
-        for y in 0..icon {
-            for xx in 0..icon {
-                let cov = mark[(y * icon + xx) as usize];
-                over(&mut buf, ((iy + y) * w + icon_x + xx) as usize, dim(all_stale, CLAUDE_ORANGE), cov);
+        let (mark, mark_color) = match m.mark {
+            Mark::None => (Vec::new(), pal.value),
+            Mark::Claude => (draw_mark(icon), CLAUDE_ORANGE),
+            Mark::Pixel => (draw_pixel_mark(icon), CLAUDE_ORANGE),
+            Mark::Codex => (draw_codex_mark(icon), pal.value),
+        };
+        if !mark.is_empty() {
+            for y in 0..icon {
+                for xx in 0..icon {
+                    let cov = mark[(y * icon + xx) as usize];
+                    over(&mut buf, ((iy + y) * w + icon_x + xx) as usize, dim(all_stale, mark_color), cov);
+                }
             }
         }
 
@@ -591,6 +614,106 @@ fn draw_mark(size: i32) -> Vec<f32> {
                         dx * dx + dy * dy <= hw * hw
                     });
                     if inside {
+                        hits += 1;
+                    }
+                }
+            }
+            out[(y * size + x) as usize] = hits as f32 / (SS * SS) as f32;
+        }
+    }
+    out
+}
+
+/// Lays sections out left to right in one frame, with the hover pill
+/// (if any) under all of them.
+pub fn compose(frames: &[Frame], h: i32, scale: f32, dark: bool, hover: bool) -> Frame {
+    let w: i32 = frames.iter().map(|f| f.w).sum::<i32>().max(1);
+    let n = (w * h) as usize;
+    let mut buf = vec![[0f32; 4]; n];
+    let mut x0 = 0;
+    for f in frames {
+        for y in 0..h.min(f.h) {
+            for x in 0..f.w {
+                let p = f.px[(y * f.w + x) as usize];
+                // [0, 0, 0, 1] is the "transparent but clickable" filler.
+                if p[3] <= 1 {
+                    continue;
+                }
+                let k = 1.0 / 255.0;
+                buf[(y * w + x0 + x) as usize] =
+                    [p[0] as f32 * k, p[1] as f32 * k, p[2] as f32 * k, p[3] as f32 * k];
+            }
+        }
+        x0 += f.w;
+    }
+    if hover {
+        let pal = palette(dark);
+        let s = |v: f32| (v * scale).round() as i32;
+        let (top, bottom, r) = (s(4.0) as f32, (h - s(4.0)) as f32, s(4.0) as f32);
+        for y in 0..h {
+            for x in 0..w {
+                let a = pal.hover.3
+                    * rounded_rect_cov(x as f32 + 0.5, y as f32 + 0.5, 0.0, top, w as f32, bottom, r);
+                let d = &mut buf[(y * w + x) as usize];
+                // The pill goes under the content already in `d`.
+                let k = 1.0 - d[3];
+                d[0] += pal.hover.2 * a * k;
+                d[1] += pal.hover.1 * a * k;
+                d[2] += pal.hover.0 * a * k;
+                d[3] += a * k;
+            }
+        }
+    }
+    let px = buf
+        .iter()
+        .map(|p| {
+            let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            if p[3] < 1.0 / 255.0 {
+                [0, 0, 0, 1]
+            } else {
+                [q(p[0]), q(p[1]), q(p[2]), q(p[3])]
+            }
+        })
+        .collect();
+    Frame { w, h, px }
+}
+
+/// A terminal prompt, ">_" inside a rounded-square outline: an original mark
+/// for the Codex section (deliberately not OpenAI's logo).
+fn draw_codex_mark(size: i32) -> Vec<f32> {
+    const SS: i32 = 4; // supersampling
+    let sz = size as f32;
+    let half = (sz * 0.09).max(1.0) / 2.0;
+    // Prompt strokes in unit coordinates.
+    let segs: [((f32, f32), (f32, f32)); 3] = [
+        ((0.27, 0.34), (0.45, 0.50)),
+        ((0.45, 0.50), (0.27, 0.66)),
+        ((0.54, 0.68), (0.74, 0.68)),
+    ];
+    let seg_dist = |px: f32, py: f32, a: (f32, f32), b: (f32, f32)| -> f32 {
+        let (ax, ay, bx, by) = (a.0 * sz, a.1 * sz, b.0 * sz, b.1 * sz);
+        let (ex, ey) = (bx - ax, by - ay);
+        let t = (((px - ax) * ex + (py - ay) * ey) / (ex * ex + ey * ey)).clamp(0.0, 1.0);
+        let (dx, dy) = (px - ax - ex * t, py - ay - ey * t);
+        (dx * dx + dy * dy).sqrt()
+    };
+    let (l, t, r, b, rad) = (half, half, sz - half, sz - half, sz * 0.22);
+    let frame_dist = |px: f32, py: f32| -> f32 {
+        let cx = px.clamp(l + rad, r - rad);
+        let cy = py.clamp(t + rad, b - rad);
+        (((px - cx).powi(2) + (py - cy).powi(2)).sqrt() - rad).abs()
+    };
+    let mut out = vec![0f32; (size * size) as usize];
+    for y in 0..size {
+        for x in 0..size {
+            let mut hits = 0;
+            for sy in 0..SS {
+                for sx in 0..SS {
+                    let px = x as f32 + (sx as f32 + 0.5) / SS as f32;
+                    let py = y as f32 + (sy as f32 + 0.5) / SS as f32;
+                    let on = frame_dist(px, py) <= half * 0.85
+                        || segs.iter().any(|&(a, b)| seg_dist(px, py, a, b) <= half);
+                    if on {
                         hits += 1;
                     }
                 }
