@@ -138,6 +138,24 @@ fn value_color(v: Option<f64>, pal: &Palette) -> Rgba {
     }
 }
 
+thread_local! {
+    /// Fonts by (pixel size, first face), created once and reused by every render.
+    /// ponytail: never freed; bounded by the few size × DPI combinations a session sees.
+    static FONTS: std::cell::RefCell<std::collections::HashMap<(i32, &'static str), HFONT>> =
+        Default::default();
+}
+
+/// A cached font: the first of `faces` that's installed, at `px` pixels.
+unsafe fn font(px: i32, faces: &'static [&'static str]) -> HFONT {
+    let key = (px, faces[0]);
+    if let Some(f) = FONTS.with(|c| c.borrow().get(&key).copied()) {
+        return f;
+    }
+    let f = make_font(px, faces);
+    FONTS.with(|c| c.borrow_mut().insert(key, f));
+    f
+}
+
 unsafe fn make_font(px: i32, faces: &[&str]) -> HFONT {
     for (i, face) in faces.iter().enumerate() {
         let f = CreateFontW(
@@ -233,12 +251,10 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
         let ring_d = if !m.rings { 0 } else { (row_h as i32 - s(2.0)).clamp(1, s(if inside { 34.0 } else { 16.0 })) };
         let ring_gap = if m.rings && !inside { s(5.0) } else { 0 };
         let small_px = ((ring_d as f32 * 0.28).round() as i32).max(1);
-        let f_small = make_font(
-            small_px,
-            &["Segoe UI Variable Text Semibold", "Segoe UI Semibold"],
-        );
-        let f_label = make_font(font_px, &["Segoe UI Variable Text", "Segoe UI"]);
-        let f_value = make_font(font_px, &["Segoe UI Variable Text Semibold", "Segoe UI Semibold"]);
+        const SEMIBOLD: &[&str] = &["Segoe UI Variable Text Semibold", "Segoe UI Semibold"];
+        let f_small = font(small_px, SEMIBOLD);
+        let f_label = font(font_px, &["Segoe UI Variable Text", "Segoe UI"]);
+        let f_value = font(font_px, SEMIBOLD);
 
         let dc = CreateCompatibleDC(std::ptr::null_mut());
         let measure = |t: &[u16], f: HFONT| -> i32 {
@@ -430,10 +446,7 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
             .collect();
         SelectObject(dc, old_bmp);
         DeleteObject(bmp);
-        DeleteDC(dc);
-        DeleteObject(f_label);
-        DeleteObject(f_value);
-        DeleteObject(f_small);
+        DeleteDC(dc); // the cached fonts outlive it
 
         // Compose (premultiplied floats).
         let mut buf = vec![[0f32; 4]; n];

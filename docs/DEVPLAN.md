@@ -14,7 +14,7 @@ Current look (no dividers inside a section, one after each section):
 
 ## 1. Status (2026-11-13)
 
-**Released: v0.1.2** (Latest, first built by GitHub Actions). Phases A–C done; D closed (stay read-only); Phase E mostly done (signing, updater left).
+**Released: v0.1.3** (Latest, built by GitHub Actions). Phases A–C done; D closed (stay read-only); Phase E mostly done (signing, updater left).
 
 | Item | State |
 |---|---|
@@ -67,6 +67,11 @@ Current look (no dividers inside a section, one after each section):
 
 ---
 
+**Load and leak check** (v0.1.3)
+- Idle: ~0.03% of one core (0.05 s CPU per 3 min); 18 MB working set, 4 MB private. CPU only moves on fetches.
+- No leaks: GDI, USER, handles and memory flat across repeated fetches and 100+ forced redraws (hover stress). Handles rise ~40 during a fetch (WinHTTP + thread) and return. GDI settles at 14 / USER 18 once the tooltip has been shown (its one-time objects).
+- Fonts are cached across redraws (`render::font`, keyed by size + face): redraw ≈ 0.75 ms, down from ≈ 1.8 ms.
+- Repeated restarts in quick succession can trigger HTTP 429 from the Claude usage endpoint ("Rate limited, retrying later"); it backs off (up to 10 min) and recovers by itself.
 ## 3. Decisions (settled — don't relitigate)
 
 | Decision | Why |

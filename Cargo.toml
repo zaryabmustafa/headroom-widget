@@ -1,6 +1,6 @@
 [package]
 name = "headroom"
-version = "0.1.2"
+version = "0.1.3"
 description = "Claude Code and Codex usage limits, plus RAM, in the Windows 11 taskbar"
 license = "MIT"
 edition = "2021"
