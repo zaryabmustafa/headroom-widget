@@ -61,8 +61,10 @@ pub enum Mark {
     Claude,
     /// Claude Code's pixel-art creature.
     Pixel,
-    /// A terminal prompt, for Codex.
+    /// OpenAI's logo, for Codex.
     Codex,
+    /// A RAM stick.
+    Ram,
 }
 
 /// One account's numbers.
@@ -254,6 +256,7 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
         let gap_icon = if no_mark { 0 } else { s(7.0) };
         let gap_lv = if m.hide_labels { 0 } else { s(5.0) };
         let gap_div = s(10.0);
+        let gap_group = s(12.0);
         let div_w = s(1.0).max(1);
         let pad_r = s(4.0);
         let div_h = if per_col == 1 { s(20.0) } else { (row_h as i32 - s(2.0)).max(1) };
@@ -293,13 +296,16 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
             }
             let mut group_x = vec![0; groups];
             let mut div_x = vec![0; groups];
+            // Groups inside a section are spaced, not divided; one divider ends the section.
             for g in 0..groups {
                 group_x[g] = x;
-                x += label_w[g] + gap_lv + if inside { ring_d } else { ring_d + ring_gap + value_w[g] } + gap_div;
-                div_x[g] = x;
-                x += div_w;
+                x += label_w[g] + gap_lv + if inside { ring_d } else { ring_d + ring_gap + value_w[g] };
                 if g + 1 < groups {
+                    x += gap_group;
+                } else {
                     x += gap_div;
+                    div_x[g] = x;
+                    x += div_w;
                 }
             }
             for (ri, (row, vals)) in col.iter().zip(&values).enumerate() {
@@ -318,8 +324,10 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
                     if !m.hide_labels {
                         segs.push(Seg { text: labels[ids[g]].clone(), bold: false, small: false, x: group_x[g], w: label_w[g], y0, y1, color: pal.label, blur: 0, slack: s(2.0) });
                     }
-                    let dy = y0 + ((y1 - y0) - div_h) / 2;
-                    dividers.push(Divider { x: div_x[g], y0: dy.max(0), y1: (dy + div_h).min(h) });
+                    if g + 1 == groups {
+                        let dy = y0 + ((y1 - y0) - div_h) / 2;
+                        dividers.push(Divider { x: div_x[g], y0: dy.max(0), y1: (dy + div_h).min(h) });
+                    }
                     let content_x = group_x[g] + label_w[g] + gap_lv;
                     let color = value_color(val, &pal);
                     if m.rings {
@@ -497,7 +505,8 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
             Mark::None => (Vec::new(), pal.value),
             Mark::Claude => (draw_mark(icon), CLAUDE_ORANGE),
             Mark::Pixel => (draw_pixel_mark(icon), CLAUDE_ORANGE),
-            Mark::Codex => (draw_codex_mark(icon), pal.value),
+            Mark::Codex => (draw_mask(CODEX_MASK, icon, 0.8), pal.value),
+            Mark::Ram => (draw_mask(RAM_MASK, icon, 0.95), pal.value),
         };
         if !mark.is_empty() {
             for y in 0..icon {
@@ -678,47 +687,28 @@ pub fn compose(frames: &[Frame], h: i32, scale: f32, dark: bool, hover: bool) ->
     Frame { w, h, px }
 }
 
-/// A terminal prompt, ">_" inside a rounded-square outline: an original mark
-/// for the Codex section (deliberately not OpenAI's logo).
-fn draw_codex_mark(size: i32) -> Vec<f32> {
-    const SS: i32 = 4; // supersampling
-    let sz = size as f32;
-    let half = (sz * 0.09).max(1.0) / 2.0;
-    // Prompt strokes in unit coordinates.
-    let segs: [((f32, f32), (f32, f32)); 3] = [
-        ((0.27, 0.34), (0.45, 0.50)),
-        ((0.45, 0.50), (0.27, 0.66)),
-        ((0.54, 0.68), (0.74, 0.68)),
-    ];
-    let seg_dist = |px: f32, py: f32, a: (f32, f32), b: (f32, f32)| -> f32 {
-        let (ax, ay, bx, by) = (a.0 * sz, a.1 * sz, b.0 * sz, b.1 * sz);
-        let (ex, ey) = (bx - ax, by - ay);
-        let t = (((px - ax) * ex + (py - ay) * ey) / (ex * ex + ey * ey)).clamp(0.0, 1.0);
-        let (dx, dy) = (px - ax - ex * t, py - ay - ey * t);
-        (dx * dx + dy * dy).sqrt()
-    };
-    let (l, t, r, b, rad) = (half, half, sz - half, sz - half, sz * 0.22);
-    let frame_dist = |px: f32, py: f32| -> f32 {
-        let cx = px.clamp(l + rad, r - rad);
-        let cy = py.clamp(t + rad, b - rad);
-        (((px - cx).powi(2) + (py - cy).powi(2)).sqrt() - rad).abs()
-    };
+const MASK_N: i32 = 96;
+/// OpenAI's mark (Simple Icons `openai.svg`) and a RAM stick (Lucide
+/// `memory-stick.svg`, ISC): 96x96 8-bit alpha masks rasterized once.
+const CODEX_MASK: &[u8; (MASK_N * MASK_N) as usize] = include_bytes!("../assets/codex_mark.a8");
+const RAM_MASK: &[u8; (MASK_N * MASK_N) as usize] = include_bytes!("../assets/ram_mark.a8");
+
+/// Box-filters a mask down to `size`, drawn at `scale` of the box, centered.
+/// Solid marks fill their box while Claude's thin-spoked asterisk doesn't,
+/// so `scale` evens them out. ponytail: scales tuned by eye.
+fn draw_mask(mask: &[u8], size: i32, scale: f32) -> Vec<f32> {
+    const N: i32 = MASK_N;
+    let inner = ((size as f32 * scale).round() as i32).max(1);
+    let off = (size - inner) / 2;
     let mut out = vec![0f32; (size * size) as usize];
-    for y in 0..size {
-        for x in 0..size {
-            let mut hits = 0;
-            for sy in 0..SS {
-                for sx in 0..SS {
-                    let px = x as f32 + (sx as f32 + 0.5) / SS as f32;
-                    let py = y as f32 + (sy as f32 + 0.5) / SS as f32;
-                    let on = frame_dist(px, py) <= half * 0.85
-                        || segs.iter().any(|&(a, b)| seg_dist(px, py, a, b) <= half);
-                    if on {
-                        hits += 1;
-                    }
-                }
-            }
-            out[(y * size + x) as usize] = hits as f32 / (SS * SS) as f32;
+    for y in 0..inner {
+        let (y0, y1) = (y * N / inner, ((y + 1) * N / inner).max(y * N / inner + 1));
+        for x in 0..inner {
+            let (x0, x1) = (x * N / inner, ((x + 1) * N / inner).max(x * N / inner + 1));
+            let sum: u32 = (y0..y1)
+                .flat_map(|sy| (x0..x1).map(move |sx| mask[(sy * N + sx) as usize] as u32))
+                .sum();
+            out[((y + off) * size + x + off) as usize] = sum as f32 / (255 * (y1 - y0) * (x1 - x0)) as f32;
         }
     }
     out

@@ -1,41 +1,86 @@
+<div align="center">
+
+<img src="assets/icon.png" width="96" alt="Headroom logo">
+
 # Headroom
+
+**Know your limits before you hit them.**
 
 Claude Code and Codex usage limits, plus RAM, in the Windows 11 taskbar.
 
-```
-✳ 5h 24% | W 82% |  >_ 5h 12% | W 40% |  RAM 61% |
-```
+![Windows 11](https://img.shields.io/badge/Windows-11-F59E0B?style=flat-square&labelColor=1C1917)
+![Rust](https://img.shields.io/badge/Rust-Win32-F59E0B?style=flat-square&labelColor=1C1917)
+![No admin](https://img.shields.io/badge/admin-not%20needed-F59E0B?style=flat-square&labelColor=1C1917)
+![License MIT](https://img.shields.io/badge/license-MIT-F59E0B?style=flat-square&labelColor=1C1917)
+[![Downloads](https://img.shields.io/github/downloads/zaryabmustafa/headroom-widget/total?style=flat-square&labelColor=1C1917&color=F59E0B&label=downloads)](https://github.com/zaryabmustafa/headroom-widget/releases)
 
-Fork of [claude-usage-widget-for-windows-taskbar](https://github.com/AbdoSarmini/claude-usage-widget-for-windows-taskbar)
-by Abdo Sarmini (MIT). Unofficial; not affiliated with Anthropic or OpenAI.
+<img src="assets/screenshot.png" alt="Headroom in the taskbar: Claude 5h 29%, weekly 18%; Codex weekly 100%; RAM 74%">
+
+</div>
+
+---
 
 ## What it shows
 
-| Section | Source | Notes |
+| Section | What you see | Source |
 |---|---|---|
-| Claude Code | `%USERPROFILE%\.claude\.credentials.json` → `api.anthropic.com/api/oauth/usage` | Refreshes the login the same way Claude Code does (upstream behaviour) |
-| Codex | `%USERPROFILE%\.codex\auth.json` (or `CODEX_HOME`) → `chatgpt.com/backend-api/wham/usage` | Read-only. When the token has expired, falls back to the last `rate_limits` event in `.codex\sessions\**\*.jsonl` and shows it dimmed |
-| RAM | `GlobalMemoryStatusEx`, every 2 s | Tooltip shows used / total GB |
+| **Claude Code** | `5h` and `W` (weekly) used %, plus `F` (Fable) if you turn it on | `%USERPROFILE%\.claude\.credentials.json` → `api.anthropic.com/api/oauth/usage`. Refreshes the login the same way Claude Code does |
+| **Codex** | `5h` and `W` used % (plans with only a weekly limit show just `W`) | `%USERPROFILE%\.codex\auth.json` (or `CODEX_HOME`) → `chatgpt.com/backend-api/wham/usage`. Read-only: when the token has expired, it falls back to the last `rate_limits` event in `.codex\sessions` and shows it dimmed |
+| **RAM** | Memory in use, % | `GlobalMemoryStatusEx`, every 2 s |
 
-Windows are labelled by their length, not position: if OpenAI turns the
-5-hour window off, the Codex `5h` group hides itself.
+Hover for details: who's signed in, reset times, and used / total GB of RAM.
+Values turn orange at 80% and red at 95%. Each section fails on its own, so if one is
+down it shows `–` and the others carry on.
 
-Neither usage endpoint is a public API; either can change without notice.
+> Neither usage endpoint is a public API; either can change without notice.
 
-## Build
+## Install
 
-Needs Rust (MSVC toolchain) and Visual Studio Build Tools with "Desktop development with C++".
+Download `headroom.exe` from the [latest release](https://github.com/zaryabmustafa/headroom-widget/releases/latest),
+put it in a folder of your own (for example `%LOCALAPPDATA%\Programs\Headroom`), and run it.
+It's a single exe with no installer, no service and no admin. Right-click the
+widget and choose **Start with Windows** to launch it at sign-in.
+
+The exe isn't code-signed yet, so Windows SmartScreen may warn on first run:
+choose **More info → Run anyway**.
+
+### Build from source
+
+You need Rust (MSVC toolchain) and Visual Studio Build Tools with
+**Desktop development with C++**.
 
 ```powershell
 cargo build --release
 .\target\release\headroom.exe
 ```
 
-## Menu (right-click)
+## Menu
 
-- Customize → Show Codex / Show RAM, plus all upstream options (rings, icon, labels, font size…)
-- Accounts → Add account… accepts a Claude Code folder (`.claude`, `CLAUDE_CONFIG_DIR`) or a Codex folder (`.codex`, `CODEX_HOME`)
-- Open Claude usage page / Open Codex usage page
+Right-click the widget:
 
-Settings live in `HKCU\Software\Headroom`. Self-update is disabled (upstream
-releases would replace Headroom with the original widget).
+| Item | What's inside |
+|---|---|
+| **Show** | 5-hour, Weekly and Fable limits · Codex · RAM |
+| **Appearance** | Font size, Icon · remaining instead of used · labels · rolling numbers · usage rings · left side of the taskbar |
+| **Accounts** | Add a Claude Code folder (`.claude`, `CLAUDE_CONFIG_DIR`) or a Codex folder (`.codex`, `CODEX_HOME`) · remove · accounts per column |
+| **Update every** | Refresh interval |
+| | Start with Windows · Refresh now · Open Claude / Codex usage page · Exit |
+
+Settings live in `HKCU\Software\Headroom`.
+
+## Privacy
+
+Headroom only talks to `api.anthropic.com`, `platform.claude.com` and
+`chatgpt.com`, using the logins that Claude Code and Codex already saved on
+your PC. It has no telemetry and no self-update. It never writes to Codex's
+`auth.json`.
+
+## Credits
+
+Fork of [claude-usage-widget-for-windows-taskbar](https://github.com/AbdoSarmini/claude-usage-widget-for-windows-taskbar)
+by Abdo Sarmini, MIT-licensed; see [LICENSE](LICENSE). The RAM icon is
+Lucide's `memory-stick` (ISC).
+
+Unofficial: not affiliated with Anthropic or OpenAI. Claude and the OpenAI logo
+are their owners' trademarks and are used only to label the sections.
+Brand details are in [docs/BRAND.md](docs/BRAND.md).

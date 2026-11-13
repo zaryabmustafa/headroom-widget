@@ -8,11 +8,11 @@
 //! and are marked stale.
 
 use crate::api::{parse_iso8601, FetchError, Limit, Usage};
-use crate::http;
+use crate::{http, now};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 const HOST: &str = "chatgpt.com";
 const USAGE_PATH: &str = "/backend-api/wham/usage";
@@ -21,10 +21,6 @@ const USER_AGENT: &str = "codex_cli_rs/0.0.0 (Windows; x86_64) headroom";
 const SHORT_WINDOW_MAX_SECS: i64 = 24 * 3600;
 /// Session-log day folders to look through, newest first.
 const LOG_DAYS_TO_SCAN: usize = 7;
-
-fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
-}
 
 /// `CODEX_HOME`, or `%USERPROFILE%\.codex`.
 pub fn default_dir() -> PathBuf {

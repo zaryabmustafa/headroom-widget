@@ -4,7 +4,6 @@ mod api;
 mod codex;
 mod http;
 mod render;
-mod update;
 
 use http::wide;
 use std::cell::{Cell, RefCell};
@@ -30,22 +29,17 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::core::w;
 
 const WM_APP_RESULT: u32 = WM_APP + 1;
-const WM_APP_CSWAP: u32 = WM_APP + 2; // claude-swap finished; lparam: Box<Result<(), String>>
-const WM_APP_UPDATE: u32 = WM_APP + 3; // update check or install finished; lparam: Box<UpdateMsg>
 const T_LAYOUT: usize = 1; // keeps the widget attached and positioned
 const T_ROLL: usize = 5; // animation frames while numbers roll
 /// How long a changed number rolls.
 const ROLL_SECS: f32 = 0.45;
 const T_TICK: usize = 3; // refreshes tooltip countdowns
-const T_UPDATE: usize = 4; // one-shot: next check for a new release
 const T_RAM: usize = 6; // samples memory use
 const RAM_EVERY_MS: u32 = 2000;
 const T_FETCH_BASE: usize = 1000; // + account id, one-shot: that account's next fetch
 
 const ID_REFRESH: usize = 1;
 const ID_OPEN: usize = 2;
-const ID_CSWAP: usize = 9;
-const ID_UPDATE: usize = 10;
 const ID_AUTOSTART: usize = 3;
 const ID_EXIT: usize = 4;
 const ID_SHOW_LEFT: usize = 5;
@@ -231,14 +225,6 @@ struct State {
     ram: Option<(f64, u64, u64)>,
     /// Accounts stacked in each column of the widget.
     rows_per_col: u32,
-    /// claude-swap's `cswap.exe`, found once at launch.
-    cswap: Option<PathBuf>,
-    /// A `cswap switch` is running.
-    cswap_running: bool,
-    /// A newer release, once a check found one.
-    update: Option<update::Release>,
-    /// What the updater is doing, shown greyed out in the menu.
-    update_busy: Option<&'static str>,
 }
 
 thread_local! {
@@ -248,7 +234,6 @@ thread_local! {
         hover: false, dark: false, rendered: None, pos: (0, 0, 0, 0),
         interval: DEFAULT_INTERVAL, show_left: false,
         font_size: DEFAULT_FONT_SIZE, icon_size: DEFAULT_ICON_SIZE, hide_icon: false, hide_labels: false, on_left: false, pixel_icon: false, rings: false, ring_text: false, roll: false, hide_five: false, hide_week: false, hide_fable: false, hide_codex: false, hide_ram: false, ram: None, rows_per_col: DEFAULT_PER_COL,
-        cswap: None, cswap_running: false, update: None, update_busy: None,
     });
 }
 
@@ -262,24 +247,10 @@ fn now() -> i64 {
 
 fn main() {
     unsafe {
-        // Single instance. Right after an update the previous copy may still
-        // be exiting, so the new one waits for it instead of quitting.
-        let after_update = std::env::args().any(|a| a == update::UPDATED_ARG);
-        let mut tries = 0;
-        loop {
-            let m = CreateMutexW(null(), 0, w!("Local\\Headroom.Singleton"));
-            if GetLastError() != ERROR_ALREADY_EXISTS {
-                break;
-            }
-            CloseHandle(m);
-            tries += 1;
-            if !after_update || tries > 50 {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        }
-        if let Ok(exe) = std::env::current_exe() {
-            std::thread::spawn(move || update::clean_up_old(&exe));
+        // Single instance.
+        CreateMutexW(null(), 0, w!("Local\\Headroom.Singleton"));
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            return;
         }
         // The folder picker needs COM on this thread.
         CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32);
@@ -334,10 +305,9 @@ fn main() {
             s.roll = read_setting("RollNumbers") == Some(1);
             s.hide_five = read_setting("HideFiveHour") == Some(1);
             s.hide_week = read_setting("HideWeekly") == Some(1);
-            s.hide_fable = read_setting("HideFable") == Some(1);
+            s.hide_fable = read_setting("HideFable") != Some(0); // hidden unless turned on
             s.hide_codex = read_setting("HideCodex") == Some(1);
             s.hide_ram = read_setting("HideRam") == Some(1);
-            s.cswap = find_cswap();
             s.rows_per_col = read_setting("AccountsPerColumn")
                 .filter(|v| (1..=render::MAX_ROWS_PER_COLUMN as u32).contains(v))
                 .unwrap_or(DEFAULT_PER_COL);
@@ -352,8 +322,6 @@ fn main() {
         SetTimer(ctl, T_LAYOUT, 1000, None);
         SetTimer(ctl, T_TICK, 30_000, None);
         SetTimer(ctl, T_RAM, RAM_EVERY_MS, None);
-        // No T_UPDATE: upstream releases would replace Headroom with the original widget.
-        let _ = UPDATE_FIRST_CHECK_MS;
         start_fetch_all();
 
         let mut m: MSG = std::mem::zeroed();
@@ -602,7 +570,13 @@ fn ensure_widget() {
             }
             if let Some(p) = ram {
                 let row = render::Row { five: Some(p), week: None, fable: None, roll: None, stale: false };
-                models.push(model(vec![row], render::Mark::None, ["RAM", "", ""], [false, true, true], true));
+                if s.hide_icon {
+                    models.push(model(vec![row], render::Mark::None, ["RAM", "", ""], [false, true, true], true));
+                } else {
+                    // The icon replaces the "RAM" label.
+                    let m = model(vec![row], render::Mark::Ram, ["", "", ""], [false, true, true], true);
+                    models.push(render::Model { hide_labels: true, ..m });
+                }
             }
             if models.is_empty() {
                 models.push(model(Vec::new(), claude_mark, usage_labels, [s.hide_five, s.hide_week, s.hide_fable], false));
@@ -1020,231 +994,12 @@ fn set_autostart(on: bool) {
     }
 }
 
-// ---------- claude-swap ----------
-
-/// Finds claude-swap's `cswap.exe`: on PATH, or in `~\.localin`, where
-/// `uv tool install` and `pipx` put it.
-fn find_cswap() -> Option<PathBuf> {
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).collect())
-        .unwrap_or_default();
-    if let Ok(home) = std::env::var("USERPROFILE") {
-        dirs.push(PathBuf::from(home).join(".local").join("bin"));
-    }
-    dirs.into_iter().map(|d| d.join("cswap.exe")).find(|p| p.is_file())
-}
-
-/// Runs `cswap switch` (rotate to the next account) in the background, then
-/// refreshes the widget. JSON mode never stops to ask a question.
-fn run_cswap_switch(exe: PathBuf) {
-    let ctl = with(|s| {
-        if s.cswap_running {
-            return None;
-        }
-        s.cswap_running = true;
-        Some(s.ctl as isize)
-    });
-    let Some(ctl) = ctl else { return };
-    std::thread::spawn(move || {
-        let r = Box::new(cswap_switch(&exe));
-        unsafe { PostMessageW(ctl as HWND, WM_APP_CSWAP, 0, Box::into_raw(r) as LPARAM) };
-    });
-}
-
-fn cswap_switch(exe: &Path) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    use std::process::{Command, Stdio};
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    const TIMEOUT_SECS: u64 = 60;
-
-    let mut child = Command::new(exe)
-        .args(["switch", "--json"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map_err(|e| format!("Could not start cswap: {e}"))?;
-    // Read the pipes on their own threads so a chatty cswap can't block on a full pipe.
-    let read = |pipe: Option<Box<dyn std::io::Read + Send>>| {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(mut p) = pipe {
-                let _ = p.read_to_end(&mut buf);
-            }
-            String::from_utf8_lossy(&buf).into_owned()
-        })
-    };
-    let out = read(child.stdout.take().map(|p| Box::new(p) as _));
-    let err = read(child.stderr.take().map(|p| Box::new(p) as _));
-    let start = std::time::Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(st)) => break st,
-            Ok(None) if start.elapsed().as_secs() < TIMEOUT_SECS => {
-                std::thread::sleep(std::time::Duration::from_millis(200))
-            }
-            _ => {
-                let _ = child.kill();
-                return Err(format!("cswap didn't finish within {TIMEOUT_SECS} seconds."));
-            }
-        }
-    };
-    let stdout = out.join().unwrap_or_default();
-    let stderr = err.join().unwrap_or_default();
-    let json: Option<serde_json::Value> = serde_json::from_str(stdout.trim()).ok();
-    if let Some(v) = &json {
-        if let Some(m) = v["error"]["message"].as_str() {
-            return Err(m.to_string());
-        }
-        if v["switched"] == serde_json::Value::Bool(false) {
-            let reason = v["reason"].as_str().unwrap_or("cswap didn't switch accounts.");
-            return Err(reason.to_string());
-        }
-    }
-    if status.success() {
-        Ok(())
-    } else {
-        let detail = [stderr.trim(), stdout.trim()].into_iter().find(|t| !t.is_empty());
-        Err(detail.unwrap_or("cswap failed.").chars().take(500).collect())
-    }
-}
-
-// ---------- updates ----------
-
-/// First check shortly after launch, then once a day.
-const UPDATE_FIRST_CHECK_MS: u32 = 15_000;
-const UPDATE_EVERY_MS: u32 = 24 * 60 * 60 * 1000;
-
-enum UpdateMsg {
-    Checked { manual: bool, r: Result<Option<update::Release>, String> },
-    Installed { rel: update::Release, r: Result<(), update::InstallError> },
-}
-
-fn post_update(ctl: isize, msg: UpdateMsg) {
-    unsafe { PostMessageW(ctl as HWND, WM_APP_UPDATE, 0, Box::into_raw(Box::new(msg)) as LPARAM) };
-}
-
-/// Looks for a newer release. `manual` (from the menu) also reports
-/// "up to date" and errors; the daily check stays quiet.
-fn start_update_check(manual: bool) {
-    let ctl = with(|s| {
-        if s.update_busy.is_some() {
-            return None;
-        }
-        s.update_busy = Some("Checking for updates…");
-        Some(s.ctl as isize)
-    });
-    let Some(ctl) = ctl else { return };
-    std::thread::spawn(move || post_update(ctl, UpdateMsg::Checked { manual, r: update::check() }));
-}
-
-fn start_update_install() {
-    let job = with(|s| {
-        if s.update_busy.is_some() {
-            return None;
-        }
-        let rel = s.update.clone()?;
-        s.update_busy = Some("Updating…");
-        Some((s.ctl as isize, rel))
-    });
-    let Some((ctl, rel)) = job else { return };
-    std::thread::spawn(move || {
-        let r = match std::env::current_exe() {
-            Ok(exe) => update::install(&rel, &exe),
-            Err(e) => Err(update::InstallError::Other(format!("Can't find the widget's exe: {e}"))),
-        };
-        post_update(ctl, UpdateMsg::Installed { rel, r });
-    });
-}
-
-unsafe fn on_update_msg(msg: UpdateMsg) {
-    let ctl = with(|s| {
-        s.update_busy = None;
-        s.ctl
-    });
-    match msg {
-        UpdateMsg::Checked { manual, r } => {
-            SetTimer(ctl, T_UPDATE, UPDATE_EVERY_MS, None);
-            let current = concat!("v", env!("CARGO_PKG_VERSION"));
-            match r {
-                Ok(Some(rel)) => {
-                    let tag = rel.tag.clone();
-                    with(|s| s.update = Some(rel));
-                    if manual {
-                        let text = format!(
-                            "Version {tag} is available (you have {current}).\n\nUpdate now? The widget restarts by itself."
-                        );
-                        if message(&text, MB_YESNO | MB_ICONINFORMATION) == IDYES {
-                            start_update_install();
-                        }
-                    }
-                }
-                Ok(None) => {
-                    with(|s| s.update = None);
-                    if manual {
-                        message(&format!("You have the latest version ({current})."), MB_OK | MB_ICONINFORMATION);
-                    }
-                }
-                Err(e) => {
-                    if manual {
-                        message(&format!("Couldn't check for updates:\n\n{e}"), MB_OK | MB_ICONWARNING);
-                    }
-                }
-            }
-        }
-        UpdateMsg::Installed { rel, r } => match r {
-            Ok(()) => {
-                let exe = std::env::current_exe().unwrap_or_default();
-                if let Err(e) = std::process::Command::new(&exe).arg(update::UPDATED_ARG).spawn() {
-                    message(
-                        &format!("{} was installed but couldn't be started:\n\n{e}\n\nStart the widget again by hand.", rel.tag),
-                        MB_OK | MB_ICONWARNING,
-                    );
-                }
-                quit();
-            }
-            Err(update::InstallError::NoAccess) => {
-                let folder = std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.parent().map(|d| d.display().to_string()))
-                    .unwrap_or_default();
-                message(
-                    &format!(
-                        "The widget can't update itself in\n{folder}\nbecause that folder needs administrator rights.\n\n\
-                         The download page will open so you can replace the exe by hand. Keeping the widget in a folder \
-                         of your own, like %LOCALAPPDATA%\\Programs\\ClaudeUsageWidget, lets it update itself."
-                    ),
-                    MB_OK | MB_ICONINFORMATION,
-                );
-                open_url(&rel.page);
-            }
-            Err(update::InstallError::Other(e)) => {
-                message(&format!("Updating to {} failed:\n\n{e}", rel.tag), MB_OK | MB_ICONWARNING);
-            }
-        },
-    }
-}
-
 unsafe fn quit() {
     let (widget, ctl) = with(|s| (s.widget, s.ctl));
     if !widget.is_null() {
         DestroyWindow(widget);
     }
     DestroyWindow(ctl);
-}
-
-fn on_cswap_done(r: Result<(), String>) {
-    with(|s| s.cswap_running = false);
-    match r {
-        // The live login changed: show the new account's numbers now.
-        Ok(()) => start_fetch_all(),
-        Err(e) => unsafe {
-            message(&format!("Switching accounts with claude-swap failed:
-
-{e}"), MB_OK | MB_ICONWARNING);
-        },
-    }
 }
 
 fn open_usage_page() {
@@ -1263,18 +1018,23 @@ unsafe fn show_menu() {
     // Settings first, then the everyday actions next to Exit, closest to the
     // taskbar where the menu opens.
     let tick = |id: usize| if setting_checked(id) == Some(true) { MF_STRING | MF_CHECKED } else { MF_STRING };
-    let sub = CreatePopupMenu();
-    for (i, (_, label)) in INTERVALS.iter().enumerate() {
-        AppendMenuW(sub, tick(ID_INTERVAL_BASE + i), ID_INTERVAL_BASE + i, wide(label).as_ptr());
-    }
-    AppendMenuW(menu, MF_POPUP, sub as usize, w!("Update every"));
-    AppendMenuW(menu, tick(ID_SHOW_LEFT), ID_SHOW_LEFT, w!("Show remaining instead of used"));
-    let custom = CreatePopupMenu();
+    // Show: what's on the taskbar.
+    let show = CreatePopupMenu();
+    AppendMenuW(show, tick(ID_HIDE_FIVE), ID_HIDE_FIVE, w!("5-hour limit"));
+    AppendMenuW(show, tick(ID_HIDE_WEEK), ID_HIDE_WEEK, w!("Weekly limit"));
+    AppendMenuW(show, tick(ID_HIDE_FABLE), ID_HIDE_FABLE, w!("Fable limit"));
+    AppendMenuW(show, MF_SEPARATOR, 0, null());
+    AppendMenuW(show, tick(ID_HIDE_CODEX), ID_HIDE_CODEX, w!("Codex"));
+    AppendMenuW(show, tick(ID_HIDE_RAM), ID_HIDE_RAM, w!("RAM"));
+    AppendMenuW(menu, MF_POPUP, show as usize, w!("Show"));
+
+    // Appearance: how it looks.
+    let look = CreatePopupMenu();
     let fonts = CreatePopupMenu();
     for (i, (_, label)) in FONT_SIZES.iter().enumerate() {
         AppendMenuW(fonts, tick(ID_FONT_BASE + i), ID_FONT_BASE + i, wide(label).as_ptr());
     }
-    AppendMenuW(custom, MF_POPUP, fonts as usize, w!("Font size"));
+    AppendMenuW(look, MF_POPUP, fonts as usize, w!("Font size"));
     let icon = CreatePopupMenu();
     AppendMenuW(icon, tick(ID_HIDE_ICON), ID_HIDE_ICON, w!("Hide icon"));
     AppendMenuW(icon, tick(ID_CLAUDE_ICON), ID_CLAUDE_ICON, w!("Show Claude icon"));
@@ -1285,29 +1045,18 @@ unsafe fn show_menu() {
         AppendMenuW(sizes, tick(ID_ICON_SIZE_BASE + i), ID_ICON_SIZE_BASE + i, wide(label).as_ptr());
     }
     AppendMenuW(icon, MF_POPUP, sizes as usize, w!("Icon size"));
-    AppendMenuW(custom, MF_POPUP, icon as usize, w!("Icon"));
-    AppendMenuW(custom, tick(ID_RINGS), ID_RINGS, w!("Show usage rings"));
-    AppendMenuW(custom, tick(ID_RING_TEXT), ID_RING_TEXT, w!("Numbers inside the rings"));
-    AppendMenuW(custom, tick(ID_ROLL), ID_ROLL, w!("Roll numbers when they change"));
-    AppendMenuW(custom, tick(ID_HIDE_LABELS), ID_HIDE_LABELS, w!("Hide labels"));
-    let limits = CreatePopupMenu();
-    AppendMenuW(limits, tick(ID_HIDE_FIVE), ID_HIDE_FIVE, w!("5-hour"));
-    AppendMenuW(limits, tick(ID_HIDE_WEEK), ID_HIDE_WEEK, w!("Weekly"));
-    AppendMenuW(limits, tick(ID_HIDE_FABLE), ID_HIDE_FABLE, w!("Fable (weekly)"));
-    AppendMenuW(custom, MF_POPUP, limits as usize, w!("Show/hide limits"));
-    AppendMenuW(custom, tick(ID_HIDE_CODEX), ID_HIDE_CODEX, w!("Show Codex"));
-    AppendMenuW(custom, tick(ID_HIDE_RAM), ID_HIDE_RAM, w!("Show RAM"));
-    AppendMenuW(custom, tick(ID_ON_LEFT), ID_ON_LEFT, w!("Show on the left side"));
-    // Only matters with more than one account.
-    let n_accounts = with(|s| s.accounts.len());
-    let per = CreatePopupMenu();
-    for n in 1..=render::MAX_ROWS_PER_COLUMN {
-        let text = wide(&n.to_string());
-        AppendMenuW(per, tick(ID_PER_COL_BASE + n), ID_PER_COL_BASE + n, text.as_ptr());
-    }
-    let per_flags = if n_accounts > 1 { MF_POPUP } else { MF_POPUP | MF_GRAYED };
-    AppendMenuW(custom, per_flags, per as usize, w!("Accounts per column"));
-    AppendMenuW(menu, MF_POPUP, custom as usize, w!("Customize"));
+    AppendMenuW(look, MF_POPUP, icon as usize, w!("Icon"));
+    AppendMenuW(look, MF_SEPARATOR, 0, null());
+    AppendMenuW(look, tick(ID_SHOW_LEFT), ID_SHOW_LEFT, w!("Show remaining instead of used"));
+    AppendMenuW(look, tick(ID_HIDE_LABELS), ID_HIDE_LABELS, w!("Hide labels"));
+    AppendMenuW(look, tick(ID_ROLL), ID_ROLL, w!("Roll numbers when they change"));
+    AppendMenuW(look, MF_SEPARATOR, 0, null());
+    AppendMenuW(look, tick(ID_RINGS), ID_RINGS, w!("Show usage rings"));
+    AppendMenuW(look, tick(ID_RING_TEXT), ID_RING_TEXT, w!("Numbers inside the rings"));
+    AppendMenuW(look, MF_SEPARATOR, 0, null());
+    AppendMenuW(look, tick(ID_ON_LEFT), ID_ON_LEFT, w!("Place on the left side"));
+    AppendMenuW(menu, MF_POPUP, look as usize, w!("Appearance"));
+
     let accounts = CreatePopupMenu();
     AppendMenuW(accounts, MF_STRING, ID_ADD_ACCOUNT, w!("Add account…"));
     let labels = with(|s| s.accounts.iter().map(|a| a.label.clone()).collect::<Vec<_>>());
@@ -1320,31 +1069,27 @@ unsafe fn show_menu() {
         let text = wide(&format!("Remove {}", label.replace('&', "&&")));
         AppendMenuW(accounts, removable, ID_REMOVE_BASE + i, text.as_ptr());
     }
+    // Only matters with more than one account.
+    let per = CreatePopupMenu();
+    for n in 1..=render::MAX_ROWS_PER_COLUMN {
+        let text = wide(&n.to_string());
+        AppendMenuW(per, tick(ID_PER_COL_BASE + n), ID_PER_COL_BASE + n, text.as_ptr());
+    }
+    let per_flags = if labels.len() > 1 { MF_POPUP } else { MF_POPUP | MF_GRAYED };
+    AppendMenuW(accounts, MF_SEPARATOR, 0, null());
+    AppendMenuW(accounts, per_flags, per as usize, w!("Accounts per column"));
     AppendMenuW(menu, MF_POPUP, accounts as usize, w!("Accounts"));
+
+    let sub = CreatePopupMenu();
+    for (i, (_, label)) in INTERVALS.iter().enumerate() {
+        AppendMenuW(sub, tick(ID_INTERVAL_BASE + i), ID_INTERVAL_BASE + i, wide(label).as_ptr());
+    }
+    AppendMenuW(menu, MF_POPUP, sub as usize, w!("Update every"));
     AppendMenuW(menu, tick(ID_AUTOSTART), ID_AUTOSTART, w!("Start with Windows"));
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
     AppendMenuW(menu, MF_STRING, ID_REFRESH, w!("Refresh now"));
     AppendMenuW(menu, MF_STRING, ID_OPEN, w!("Open Claude usage page"));
     AppendMenuW(menu, MF_STRING, ID_OPEN_CODEX, w!("Open Codex usage page"));
-    // Only when claude-swap was installed at launch.
-    let (cswap, running) = with(|s| (s.cswap.clone(), s.cswap_running));
-    if cswap.is_some() {
-        let (flags, text) = if running {
-            (MF_STRING | MF_GRAYED, w!("Switching account…"))
-        } else {
-            (MF_STRING, w!("Switch to next account (cswap)"))
-        };
-        AppendMenuW(menu, flags, ID_CSWAP, text);
-    }
-    let (busy, new_tag) = with(|s| (s.update_busy, s.update.as_ref().map(|r| r.tag.clone())));
-    let update_text = match (busy, &new_tag) {
-        (Some(b), _) => b.to_string(),
-        (None, Some(tag)) => format!("Update to {tag}"),
-        (None, None) => "Check for updates".to_string(),
-    };
-    let update_flags = if busy.is_some() { MF_STRING | MF_GRAYED } else { MF_STRING };
-    // No "Check for updates": upstream releases would replace Headroom with the original widget.
-    let _ = (update_flags, update_text);
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
     AppendMenuW(menu, MF_STRING, ID_EXIT, w!("Exit"));
     refresh_menu(menu);
@@ -1372,18 +1117,6 @@ unsafe fn show_menu() {
         }
         ID_OPEN => open_usage_page(),
         ID_OPEN_CODEX => open_url(CODEX_USAGE_URL),
-        ID_CSWAP => {
-            if let Some(exe) = cswap {
-                run_cswap_switch(exe);
-            }
-        }
-        ID_UPDATE => {
-            if new_tag.is_some() {
-                start_update_install();
-            } else {
-                start_update_check(true);
-            }
-        }
         ID_EXIT => quit(),
         _ => {}
     }
@@ -1648,10 +1381,6 @@ unsafe extern "system" fn ctl_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                         ensure_widget();
                     }
                 }
-                T_UPDATE => {
-                    KillTimer(hwnd, T_UPDATE);
-                    start_update_check(false);
-                }
                 T_TICK => {
                     update_tooltip();
                     // A window just reset: fetch now instead of waiting.
@@ -1682,16 +1411,6 @@ unsafe extern "system" fn ctl_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             0
         }
-        WM_APP_UPDATE => {
-            let m = Box::from_raw(lp as *mut UpdateMsg);
-            on_update_msg(*m);
-            0
-        }
-        WM_APP_CSWAP => {
-            let r = Box::from_raw(lp as *mut Result<(), String>);
-            on_cswap_done(*r);
-            0
-        }
         WM_APP_RESULT => {
             let r = Box::from_raw(lp as *mut FetchResult);
             on_result(*r);
@@ -1715,8 +1434,10 @@ unsafe extern "system" fn ctl_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             0
         }
         _ if msg == tb_msg && msg != 0 => {
-            // Explorer restarted: our old widget died with the old taskbar.
-            with(|s| s.widget = null_mut());
+            // Explorer restarted. T_LAYOUT may already have built a widget on the
+            // new taskbar; forget the taskbar (not the widget) so ensure_widget
+            // destroys whatever is alive and recreates exactly one.
+            with(|s| s.taskbar = null_mut());
             ensure_widget();
             0
         }
