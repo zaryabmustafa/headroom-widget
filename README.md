@@ -8,11 +8,13 @@
 
 A Windows 11 taskbar widget that shows your Claude Code and OpenAI Codex usage limits, plus RAM.
 
-![Windows 11](https://img.shields.io/badge/Windows-11-F59E0B?style=flat-square&labelColor=1C1917)
-![Rust](https://img.shields.io/badge/Rust-Win32-F59E0B?style=flat-square&labelColor=1C1917)
-![No admin](https://img.shields.io/badge/admin-not%20needed-F59E0B?style=flat-square&labelColor=1C1917)
-![License MIT](https://img.shields.io/badge/license-MIT-F59E0B?style=flat-square&labelColor=1C1917)
-[![Downloads](https://img.shields.io/github/downloads/zaryabmustafa/headroom-widget/total?style=flat-square&labelColor=1C1917&color=F59E0B&label=downloads)](https://github.com/zaryabmustafa/headroom-widget/releases)
+[![Latest release](https://img.shields.io/github/v/release/zaryabmustafa/headroom-widget?style=for-the-badge&labelColor=1C1917&color=F59E0B&label=release)](https://github.com/zaryabmustafa/headroom-widget/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/zaryabmustafa/headroom-widget/total?style=for-the-badge&labelColor=1C1917&color=F59E0B&label=downloads)](https://github.com/zaryabmustafa/headroom-widget/releases)
+[![Build](https://img.shields.io/github/actions/workflow/status/zaryabmustafa/headroom-widget/release.yml?style=for-the-badge&labelColor=1C1917&label=build&logo=githubactions&logoColor=F59E0B)](https://github.com/zaryabmustafa/headroom-widget/actions/workflows/release.yml)
+<br>
+![Windows 11](https://img.shields.io/badge/Windows-11-F59E0B?style=for-the-badge&labelColor=1C1917)
+![Rust](https://img.shields.io/badge/Rust-Win32-F59E0B?style=for-the-badge&labelColor=1C1917&logo=rust&logoColor=F59E0B)
+[![License](https://img.shields.io/github/license/zaryabmustafa/headroom-widget?style=for-the-badge&labelColor=1C1917&color=F59E0B)](LICENSE)
 
 <img src="assets/screenshot.png" alt="Headroom in the taskbar: Claude 5h 29%, weekly 18%; Codex weekly 100%; RAM 74%">
 
