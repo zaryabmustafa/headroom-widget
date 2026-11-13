@@ -169,12 +169,15 @@ cargo test
 Plans and decisions are in [docs/DEVPLAN.md](docs/DEVPLAN.md); releases are cut as
 described in [docs/RELEASING.md](docs/RELEASING.md).
 
-## License
+## Author and license
 
-MIT; see [LICENSE](LICENSE).
+Headroom is made by [Zaryab Mustafa](https://github.com/zaryabmustafa).
+It started as a fork of [claude-usage-widget-for-windows-taskbar](https://github.com/AbdoSarmini/claude-usage-widget-for-windows-taskbar)
+by Abdo Sarmini and has since been largely rebuilt: Codex and RAM sections, the
+redesigned widget and menu, multiple accounts, quieter networking, the installer
+and the release pipeline.
 
-Headroom is a fork of [claude-usage-widget-for-windows-taskbar](https://github.com/AbdoSarmini/claude-usage-widget-for-windows-taskbar)
-by Abdo Sarmini. The RAM icon is Lucide's `memory-stick` (ISC).
+MIT; see [LICENSE](LICENSE). The RAM icon is Lucide's `memory-stick` (ISC).
 
 Unofficial: not affiliated with Anthropic or OpenAI. Claude and the OpenAI logo
 are their owners' trademarks and are used only to label the sections.

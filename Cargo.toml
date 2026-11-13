@@ -2,6 +2,7 @@
 name = "headroom"
 version = "0.1.7"
 description = "Claude Code and Codex usage limits, plus RAM, in the Windows 11 taskbar"
+authors = ["Zaryab Mustafa"]
 license = "MIT"
 edition = "2021"
 

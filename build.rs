@@ -1,6 +1,14 @@
 fn main() {
-    // App icon (shown in Explorer and Task Manager).
-    embed_resource::compile("app.rc", embed_resource::NONE)
+    // App icon (shown in Explorer and Task Manager) and version details.
+    let v = |k: &str| std::env::var(k).unwrap();
+    let macros = [
+        format!("VER_MAJOR={}", v("CARGO_PKG_VERSION_MAJOR")),
+        format!("VER_MINOR={}", v("CARGO_PKG_VERSION_MINOR")),
+        format!("VER_PATCH={}", v("CARGO_PKG_VERSION_PATCH")),
+        format!("VER_STR=\"{}\"", v("CARGO_PKG_VERSION")),
+    ];
+    println!("cargo:rerun-if-changed=app.rc");
+    embed_resource::compile("app.rc", &macros)
         .manifest_optional()
         .unwrap();
     // DPI awareness, common controls v6, Windows 10+ compatibility.
