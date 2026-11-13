@@ -112,6 +112,8 @@ pub struct Model {
     pub hide_fable: bool,
     /// Accounts stacked per column (1 to MAX_ROWS_PER_COLUMN); more start a new column.
     pub rows_per_col: usize,
+    /// Rightmost section: no divider after its last column.
+    pub last: bool,
 }
 
 pub struct Frame {
@@ -312,13 +314,15 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
             }
             let mut group_x = vec![0; groups];
             let mut div_x = vec![0; groups];
-            // Groups inside a section are spaced, not divided; one divider ends the section.
+            // Groups inside a section are spaced, not divided; one divider ends the section,
+            // except after the rightmost one.
+            let end_div = !(m.last && ci + 1 == columns.len());
             for g in 0..groups {
                 group_x[g] = x;
                 x += label_w[g] + gap_lv + if inside { ring_d } else { ring_d + ring_gap + value_w[g] };
                 if g + 1 < groups {
                     x += gap_group;
-                } else {
+                } else if end_div {
                     x += gap_div;
                     div_x[g] = x;
                     x += div_w;
@@ -340,7 +344,7 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
                     if !m.hide_labels {
                         segs.push(Seg { text: labels[ids[g]].clone(), bold: false, small: false, x: group_x[g], w: label_w[g], y0, y1, color: pal.label, blur: 0, slack: s(2.0) });
                     }
-                    if g + 1 == groups {
+                    if g + 1 == groups && end_div {
                         let dy = y0 + ((y1 - y0) - div_h) / 2;
                         dividers.push(Divider { x: div_x[g], y0: dy.max(0), y1: (dy + div_h).min(h) });
                     }

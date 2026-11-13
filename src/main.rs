@@ -587,6 +587,7 @@ fn ensure_widget() {
                     hide_week: hide[1],
                     hide_fable: hide[2],
                     rows_per_col: s.rows_per_col as usize,
+                    last: false,
                 }
             };
             let usage_labels = ["5h", "W", "F"];
@@ -621,6 +622,9 @@ fn ensure_widget() {
             }
             if models.is_empty() {
                 models.push((model(Vec::new(), claude_mark, usage_labels, [s.hide_five, s.hide_week, s.hide_fable], false), Some(Provider::Claude)));
+            }
+            if let Some((m, _)) = models.last_mut() {
+                m.last = true;
             }
             let changed = s.rendered.as_ref() != Some(&key);
             (key, changed, models, s.hover, s.dark)
