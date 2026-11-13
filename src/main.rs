@@ -97,14 +97,16 @@ const RUN_KEY: *const u16 = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Ru
 const RUN_VALUE: *const u16 = w!("Headroom");
 const SETTINGS_KEY: *const u16 = w!("Software\\Headroom");
 
+/// One account's part of RenderKey: provider, rounded 5-hour %, weekly %, Fable %, stale, roll progress.
+type RowKey = (u8, Option<i64>, Option<i64>, Option<i64>, bool, Option<u32>);
+
 #[derive(Clone, PartialEq)]
 struct RenderKey {
     h: i32,
     dpi: u32,
     dark: bool,
     hover: bool,
-    /// Per account: provider, rounded 5-hour %, weekly %, Fable %, stale, roll progress.
-    rows: Vec<(u8, Option<i64>, Option<i64>, Option<i64>, bool, Option<u32>)>,
+    rows: Vec<RowKey>,
     /// Rounded memory use, when shown.
     ram: Option<i64>,
     hide_codex: bool,
@@ -176,7 +178,7 @@ impl Account {
     }
 
     fn is_stale(&self) -> bool {
-        (self.error.is_some() && self.last_ok.map_or(true, |t| now() - t > 600))
+        (self.error.is_some() && self.last_ok.is_none_or(|t| now() - t > 600))
             || self.usage.is_some_and(|u| u.from_log)
     }
 }
@@ -223,18 +225,24 @@ struct State {
     hide_ram: bool,
     /// Memory: percent used, used bytes, total bytes.
     ram: Option<(f64, u64, u64)>,
+    /// CPU load in percent (tooltip only), and the last (idle, total) times it came from.
+    cpu: Option<f64>,
+    cpu_prev: (u64, u64),
+    /// Each section's right edge in widget pixels, and its provider (None = RAM), for clicks.
+    sections: Vec<(i32, Option<Provider>)>,
     /// Accounts stacked in each column of the widget.
     rows_per_col: u32,
 }
 
 thread_local! {
-    static ST: RefCell<State> = RefCell::new(State {
+    static ST: RefCell<State> = const { RefCell::new(State {
         ctl: null_mut(), widget: null_mut(), tip: null_mut(), taskbar: null_mut(),
         taskbar_created_msg: 0, accounts: Vec::new(), next_id: 0,
         hover: false, dark: false, rendered: None, pos: (0, 0, 0, 0),
         interval: DEFAULT_INTERVAL, show_left: false,
         font_size: DEFAULT_FONT_SIZE, icon_size: DEFAULT_ICON_SIZE, hide_icon: false, hide_labels: false, on_left: false, pixel_icon: false, rings: false, ring_text: false, roll: false, hide_five: false, hide_week: false, hide_fable: false, hide_codex: false, hide_ram: false, ram: None, rows_per_col: DEFAULT_PER_COL,
-    });
+        cpu: None, cpu_prev: (0, 0), sections: Vec::new(),
+    }) };
 }
 
 fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
@@ -269,11 +277,11 @@ fn main() {
             };
             RegisterClassW(&wc);
         }
-        let mut icc = INITCOMMONCONTROLSEX {
+        let icc = INITCOMMONCONTROLSEX {
             dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
             dwICC: ICC_WIN95_CLASSES,
         };
-        InitCommonControlsEx(&mut icc);
+        InitCommonControlsEx(&icc);
 
         // Hidden top-level window: owns timers and receives broadcasts
         // (TaskbarCreated, theme changes) that a taskbar child would not.
@@ -426,6 +434,25 @@ fn sample_ram() -> bool {
     })
 }
 
+/// Samples CPU load since the last call (busy share of kernel + user time).
+fn sample_cpu() {
+    use windows_sys::Win32::System::Threading::GetSystemTimes;
+    let (mut idle, mut kernel, mut user) = unsafe { std::mem::zeroed::<(FILETIME, FILETIME, FILETIME)>() };
+    if unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) } == 0 {
+        return;
+    }
+    let t = |f: FILETIME| ((f.dwHighDateTime as u64) << 32) | f.dwLowDateTime as u64;
+    // Kernel time includes idle time.
+    let (idle, total) = (t(idle), t(kernel) + t(user));
+    with(|s| {
+        let (di, dt) = (idle.wrapping_sub(s.cpu_prev.0), total.wrapping_sub(s.cpu_prev.1));
+        if s.cpu_prev != (0, 0) && dt > 0 {
+            s.cpu = Some(100.0 * dt.saturating_sub(di) as f64 / dt as f64);
+        }
+        s.cpu_prev = (idle, total);
+    });
+}
+
 // ---------- widget ----------
 
 /// Creates the widget inside the taskbar if needed, positions it just left of
@@ -559,27 +586,29 @@ fn ensure_widget() {
                 render::Mark::Claude
             };
             let codex_mark = if s.hide_icon { render::Mark::None } else { render::Mark::Codex };
+            // Each section's model, and which provider it is (None = RAM) for clicks.
             let mut models = Vec::new();
             let claude_rows = rows_of(Provider::Claude);
             if !claude_rows.is_empty() {
-                models.push(model(claude_rows, claude_mark, usage_labels, [hide_five, s.hide_week, s.hide_fable], false));
+                models.push((model(claude_rows, claude_mark, usage_labels, [hide_five, s.hide_week, s.hide_fable], false), Some(Provider::Claude)));
             }
             let codex_rows = rows_of(Provider::Codex);
             if !codex_rows.is_empty() && !s.hide_codex {
-                models.push(model(codex_rows, codex_mark, usage_labels, [hide_five_codex, s.hide_week, true], false));
+                models.push((model(codex_rows, codex_mark, usage_labels, [hide_five_codex, s.hide_week, true], false), Some(Provider::Codex)));
             }
             if let Some(p) = ram {
                 let row = render::Row { five: Some(p), week: None, fable: None, roll: None, stale: false };
-                if s.hide_icon {
-                    models.push(model(vec![row], render::Mark::None, ["RAM", "", ""], [false, true, true], true));
+                let m = if s.hide_icon {
+                    model(vec![row], render::Mark::None, ["RAM", "", ""], [false, true, true], true)
                 } else {
                     // The icon replaces the "RAM" label.
                     let m = model(vec![row], render::Mark::Ram, ["", "", ""], [false, true, true], true);
-                    models.push(render::Model { hide_labels: true, ..m });
-                }
+                    render::Model { hide_labels: true, ..m }
+                };
+                models.push((m, None));
             }
             if models.is_empty() {
-                models.push(model(Vec::new(), claude_mark, usage_labels, [s.hide_five, s.hide_week, s.hide_fable], false));
+                models.push((model(Vec::new(), claude_mark, usage_labels, [s.hide_five, s.hide_week, s.hide_fable], false), Some(Provider::Claude)));
             }
             let changed = s.rendered.as_ref() != Some(&key);
             (key, changed, models, s.hover, s.dark)
@@ -587,11 +616,17 @@ fn ensure_widget() {
 
         let mut w = with(|s| s.pos.2);
         if needs_render {
-            let frames: Vec<render::Frame> = models.iter().map(|m| render::render(m, h, scale)).collect();
+            let frames: Vec<render::Frame> = models.iter().map(|(m, _)| render::render(m, h, scale)).collect();
             let frame = render::compose(&frames, h, scale, dark, hover);
             w = frame.w;
             present(widget, &frame);
-            with(|s| s.rendered = Some(key));
+            // compose() lays frames out left to right, so right edges are running sums.
+            let mut right = 0;
+            let sections = frames.iter().zip(&models).map(|(f, (_, p))| { right += f.w; (right, *p) }).collect();
+            with(|s| {
+                s.rendered = Some(key);
+                s.sections = sections;
+            });
         }
 
         let gap = (2.0 * scale) as i32;
@@ -699,7 +734,10 @@ fn tooltip_text(s: &State) -> String {
             }
         }
     };
-    for a in &s.accounts {
+    // Claude accounts first, then Codex; each in the order they were added.
+    let mut accounts: Vec<&Account> = s.accounts.iter().collect();
+    accounts.sort_by_key(|a| a.kind as u8);
+    for a in accounts {
         if a.kind == Provider::Codex && s.hide_codex {
             continue;
         }
@@ -729,6 +767,9 @@ fn tooltip_text(s: &State) -> String {
     if let (false, Some((pct, used, total))) = (s.hide_ram, s.ram) {
         let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
         out += &format!("\n\nRAM: {:.1} / {:.1} GB ({}%)", gb(used), gb(total), pct.round() as i64);
+    }
+    if let Some(cpu) = s.cpu {
+        out += &format!("\nCPU: {}%", cpu.round() as i64);
     }
     out
 }
@@ -1377,8 +1418,14 @@ unsafe extern "system" fn ctl_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     ensure_widget(); // the next frame, or the settled numbers
                 }
                 T_RAM => {
+                    sample_cpu();
                     if sample_ram() {
                         ensure_widget();
+                    }
+                    // Keep RAM/CPU current for the next time the tooltip opens. Not while it's
+                    // open: swapping the text of a visible tooltip collapses it to one cut-off line.
+                    if IsWindowVisible(with(|s| s.tip)) == 0 {
+                        update_tooltip();
                     }
                 }
                 T_TICK => {
@@ -1467,7 +1514,15 @@ unsafe extern "system" fn widget_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             0
         }
         WM_LBUTTONUP => {
-            open_usage_page();
+            // The section under the cursor: its usage page, or Task Manager for RAM.
+            let x = (lp & 0xFFFF) as i16 as i32;
+            match with(|s| s.sections.iter().find(|(right, _)| x < *right).map(|(_, p)| *p)) {
+                Some(Some(Provider::Codex)) => open_url(CODEX_USAGE_URL),
+                Some(None) => {
+                    ShellExecuteW(null_mut(), w!("open"), w!("taskmgr.exe"), null(), null(), SW_SHOWNORMAL);
+                }
+                _ => open_usage_page(),
+            }
             0
         }
         WM_RBUTTONUP => {

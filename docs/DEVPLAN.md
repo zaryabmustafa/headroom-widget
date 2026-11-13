@@ -14,20 +14,21 @@ Current look (no dividers inside a section, one after each section):
 
 ## 1. Status (2026-11-13)
 
-**Released: v0.1.1** (Latest). Phases A, B done; Phase E mostly done; C and D open.
+**Released: v0.1.1** (Latest). Phases A, B, C done (C unreleased); Phase E mostly done; D open.
 
 | Item | State |
 |---|---|
 | Upstream imported | `8ce153f` |
 | Codex provider, RAM, section layout, rename | `9647666` |
 | Phase A: Windows build | Done. Rust 1.100 + VS 2022 Build Tools. Compiled first try with no code changes |
-| Phase B: taskbar checks | Done, except two items not exercised (see Phase B table) |
+| Phase B: taskbar checks | Done, all items |
 | Fixes, features, brand, cleanup | `5fc26b9` (see §2) |
 | v0.1.0 release | Built locally, published |
 | Icon edge + v0.1.1 | `dea8257`, `3954603`; built locally, published |
 | GitHub Actions release build | `82a5dd5`…`e693aa5`; dry run passes in ~1m15s, no warnings. Tag-triggered publish not yet exercised |
 | Release docs | `d63b43e`: `docs/RELEASING.md` |
-| Tests / lint | `cargo test` 7/7; clippy 0 errors, 5 style warnings |
+| Phase C: polish | Done (unreleased): clippy clean, tooltip grouped by provider + CPU %, click opens that section's page |
+| Tests / lint | `cargo test` 7/7; clippy clean (0 warnings) |
 
 ---
 
@@ -77,7 +78,7 @@ Current look (no dividers inside a section, one after each section):
 | Codex fallback: last `rate_limits` event in session logs, shown dimmed | Numbers only move while Codex is in use anyway |
 | Label windows by **length**, not position | OpenAI has switched the 5h window off before |
 | Self-update **removed** | Upstream updater would replace Headroom with the original exe; it was dead code |
-| Codex mark = OpenAI logo (owner's call; was `>_`) | Recognizable at a glance. `assets/codex_mark.a8` from Simple Icons `openai.svg` (simple-icons@11.0.0) via WPF `Geometry.Parse`. **Now shipped publicly; trademark question still open** (see Phase C) |
+| Codex mark = OpenAI logo (owner's call; was `>_`) | Recognizable at a glance. `assets/codex_mark.a8` from Simple Icons `openai.svg` (simple-icons@11.0.0) via WPF `Geometry.Parse`. Shipped publicly; **owner decided to keep it** (2026-11-13) |
 | RAM mark = Lucide `memory-stick` (ISC) | `assets/ram_mark.a8`, same pipeline (stroke 2, round caps) |
 | Fable limit hidden by default | Rarely relevant; one menu tick away |
 | Brand palette "Ember" | Owner's pick over graphite+mint, traffic, aurora, ink, lime |
@@ -143,31 +144,32 @@ Toolchain isn't on PATH in shells opened before the install: use `$env:USERPROFI
 ### Phase A — get it compiling  ✓ done
 Built clean on first try; no code changes were needed.
 
-### Phase B — verify on the taskbar  ✓ done (2 items not exercised)
+### Phase B — verify on the taskbar  ✓ done
 | Check | Result |
 |---|---|
 | Claude section | ✓ matches `/usage` |
 | Codex section | ✓ `W 100%`, no `5h` (weekly-only `prolite` plan); live from `wham/usage`, no 403; matches session log |
-| Codex stale path | **Not exercised** (token was live). Expire/rename the token or wait >1 h idle: section should dim, tooltip "From Codex's logs" |
+| Codex stale path | ✓ test instance with `CODEX_HOME` → copy holding an expired fake token + one real session log: section dims, tooltip "From Codex's logs" |
 | RAM | ✓ 85% vs 84.4% from the OS |
 | Light + dark taskbar | ✓ |
 | Width at 125% / 150% | ✓ no overlap |
-| Hover pill | **Not explicitly checked** (tooltip shows; pill continuity across sections not confirmed) |
+| Hover pill | ✓ one continuous pill across all three sections |
 | Explorer restart (`taskkill /f /im explorer.exe; start explorer`) | ✓ after the duplicate-widget fix |
 | Sleep / resume | ✓ refetches on wake |
 | Menu toggles | ✓ Show → Codex / RAM resize immediately |
 
 **If `wham/usage` returns 403 from Cloudflare:** the UA/header set is the suspect. Compare with Codex CLI's own request headers (`codex-rs`), not guesses.
 
-### Phase C — polish  ← next
-- **Trademark:** the OpenAI mark (and upstream's Claude asterisk) now ship in a public exe. Decide: keep, or switch Codex back to `>_` / a neutral mark.
-- Finish the two Phase B items above.
-- Clippy: 5 style warnings (3 auto-fixable with `cargo clippy --fix`).
-- Tooltip: group by provider when there are multiple accounts per provider.
-- Left-click: open the usage page for the section under the cursor (needs per-section x ranges from `compose`).
-- Optional: compact mode (`24·82 12·40 61%`) if width is tight.
-- Optional: CPU load % in tooltip only (`GetSystemTimes`, no admin).
-
+### Phase C — polish  ✓ done (unreleased; ship as v0.1.2)
+- ✓ Trademark: **keep** the OpenAI mark (owner's decision).
+- ✓ The two open Phase B checks (stale path, hover pill).
+- ✓ Clippy clean: auto-fixes, `RowKey` type alias, `sort_by_key(Reverse)`, dropped a needless `mut`.
+- ✓ Tooltip groups accounts by provider (Claude first, then Codex; stable within each).
+- ✓ Left-click opens the clicked section's page: Claude → claude.ai usage, Codex → ChatGPT Codex usage, RAM → Task Manager. `ensure_widget` stores each section's right edge (`State::sections`) after `compose`.
+- ✓ CPU load % in the tooltip (`GetSystemTimes` delta on the 2 s RAM timer). The tooltip text refreshes on that timer only while hidden.
+- Skipped: compact mode. *Appearance → Hide labels* already gives `37% 19% | 100% | 77%`; add when width is still a problem.
+- Not yet tried with a real mouse: clicking each section.
+- Seen while testing (also in v0.1.1, so not new): after the cursor jumps between points (synthetic moves from the test tool), the tooltip can show as a one-line, cut-off box (`HeadroomClaude Code · z…`) instead of the multi-line one. Not seen with a real mouse so far. If users hit it, look at `TTF_SUBCLASS` relaying and re-sending `TTM_SETMAXTIPWIDTH` on `TTN_SHOW`.
 ### Phase D — Codex token refresh (optional, gated)
 Only after reading how Codex CLI refreshes `auth.json` (endpoint, client id, whether refresh tokens rotate, any file lock). Must not log Codex CLI out. If rotation + no lock → keep read-only.
 

@@ -147,7 +147,7 @@ fn from_logs(dir: &Path) -> Option<Usage> {
             .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
             .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
             .collect();
-        files.sort_by(|a, b| b.0.cmp(&a.0));
+        files.sort_by_key(|f| std::cmp::Reverse(f.0));
         for (_, f) in files {
             if let Some(u) = fs::read_to_string(&f).ok().and_then(|t| last_snapshot(&t)) {
                 return Some(u);
