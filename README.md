@@ -54,6 +54,8 @@ cargo build --release
 .\target\release\headroom.exe
 ```
 
+Maintainers: see [docs/RELEASING.md](docs/RELEASING.md) for how releases are cut.
+
 ## Menu
 
 Right-click the widget:
