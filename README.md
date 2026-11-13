@@ -6,7 +6,7 @@
 
 **Know your limits before you hit them.**
 
-Claude Code and Codex usage limits, plus RAM, in the Windows 11 taskbar.
+A Windows 11 taskbar widget that shows your Claude Code and OpenAI Codex usage limits, plus RAM.
 
 ![Windows 11](https://img.shields.io/badge/Windows-11-F59E0B?style=flat-square&labelColor=1C1917)
 ![Rust](https://img.shields.io/badge/Rust-Win32-F59E0B?style=flat-square&labelColor=1C1917)
@@ -19,6 +19,13 @@ Claude Code and Codex usage limits, plus RAM, in the Windows 11 taskbar.
 </div>
 
 ---
+
+Headroom is a free, open-source usage tracker for Claude Code and Codex on Windows.
+It sits in the taskbar next to the clock and shows how much of your Claude 5-hour
+limit, Claude weekly limit and Codex (ChatGPT) rate limits you've used, so you can
+see when you're close to a limit before you hit it. It needs no API key; it reads
+the logins Claude Code and the Codex CLI already saved. It's one small native exe
+(Rust, Win32) using about 18 MB of RAM and almost no CPU.
 
 ## What it shows
 
@@ -76,6 +83,31 @@ Headroom only talks to `api.anthropic.com`, `platform.claude.com` and
 `chatgpt.com`, using the logins that Claude Code and Codex already saved on
 your PC. It has no telemetry and no self-update. It never writes to Codex's
 `auth.json`.
+
+## FAQ
+
+**How do I check my Claude Code usage limit on Windows?**
+Run Headroom. The Claude section shows the percentage of your 5-hour and weekly
+limits used, and hovering shows when each one resets. Click it to open Claude's
+usage page.
+
+**Does it work with Claude Pro and Max plans?**
+Yes. It works with any plan you sign in to Claude Code with; it shows the same
+numbers as Claude Code's `/usage` command.
+
+**How do I see my Codex rate limits?**
+Sign in to the Codex CLI once. Headroom reads its saved login and shows the
+5-hour and weekly Codex limits next to Claude's.
+
+**Do I need an API key?**
+No. Headroom uses the logins that Claude Code and Codex already saved on your PC.
+
+**Will it get my account rate-limited?**
+It checks at most once a minute (every 2 minutes by default), backs off when a
+server says it's busy, and never retries a login the server refused.
+
+**Does it work on Windows 10?**
+It's built and tested on Windows 11. Windows 10 isn't tested.
 
 ## Credits
 
