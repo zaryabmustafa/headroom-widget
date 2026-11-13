@@ -33,8 +33,8 @@ Exit any running copy of Headroom first, or the build can't replace the exe.
 
 - Keep each pull request to one change, and say what it fixes and how you tested it.
 - Run `cargo test` and `cargo clippy` before you push.
-- Keep the code small: Headroom has no runtime dependencies besides `windows-sys`,
-  and new ones need a good reason.
+- Keep the code small: Headroom depends only on `windows-sys` and `serde_json`
+  (plus `embed-resource` at build time), and new dependencies need a good reason.
 - Use LF line endings.
 
 Plans and past decisions are in [docs/DEVPLAN.md](docs/DEVPLAN.md). Maintainers cut

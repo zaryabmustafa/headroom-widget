@@ -150,10 +150,21 @@ fn load_creds(dir: &Path) -> Result<Creds, FetchError> {
     })
 }
 
-/// A 401/403 whose body isn't JSON came from Cloudflare or a proxy (an HTML
-/// "Attention Required" page), not from the auth server: the login is fine.
-pub fn blocked(r: &http::Response) -> bool {
-    matches!(r.status, 401 | 403) && serde_json::from_slice::<Value>(&r.body).is_err()
+/// A 401/403 carrying an HTML page came from Cloudflare or a proxy ("Attention
+/// Required"), not from the auth server: the login is fine. An empty or JSON
+/// body is a real answer from the server.
+fn blocked(r: &http::Response) -> bool {
+    matches!(r.status, 401 | 403) && r.body.trim_ascii_start().first() == Some(&b'<')
+}
+
+/// Every request goes through here, so a Cloudflare page is never taken for a
+/// rejected login: it backs off like a 429 instead.
+pub fn send(method: &str, host: &str, path: &str, headers: &str, body: Option<&[u8]>) -> Result<http::Response, FetchError> {
+    let resp = http::request(method, host, path, headers, body).map_err(FetchError::Other)?;
+    if blocked(&resp) {
+        return Err(FetchError::RateLimited);
+    }
+    Ok(resp)
 }
 
 fn needs_refresh(c: &Creds) -> bool {
@@ -216,17 +227,13 @@ fn refresh(dir: &Path, rejected: Option<&str>) -> Result<String, FetchError> {
     if !scopes.is_empty() {
         body["scope"] = Value::String(scopes.join(" "));
     }
-    let resp = http::request(
+    let resp = send(
         "POST",
         TOKEN_HOST,
         TOKEN_PATH,
         "Content-Type: application/json\r\nAccept: application/json",
         Some(body.to_string().as_bytes()),
-    )
-    .map_err(FetchError::Other)?;
-    if blocked(&resp) {
-        return Err(FetchError::RateLimited);
-    }
+    )?;
     match resp.status {
         200 => {}
         400 | 401 | 403 => {
@@ -272,7 +279,7 @@ fn refresh(dir: &Path, rejected: Option<&str>) -> Result<String, FetchError> {
 }
 
 fn get_usage(token: &str) -> Result<http::Response, FetchError> {
-    http::request(
+    send(
         "GET",
         API_HOST,
         USAGE_PATH,
@@ -281,7 +288,6 @@ fn get_usage(token: &str) -> Result<http::Response, FetchError> {
         ),
         None,
     )
-    .map_err(FetchError::Other)
 }
 
 /// Fetches usage for the Claude Code login stored in `dir`.
@@ -304,9 +310,6 @@ pub fn fetch(dir: &Path) -> Result<Usage, FetchError> {
         c.access
     };
     let mut resp = get_usage(&token)?;
-    if blocked(&resp) {
-        return Err(FetchError::RateLimited);
-    }
     if resp.status == 401 {
         mark_dead(&token);
         if refresh_dead {
@@ -314,9 +317,6 @@ pub fn fetch(dir: &Path) -> Result<Usage, FetchError> {
         }
         token = refresh(dir, Some(&token))?;
         resp = get_usage(&token)?;
-    }
-    if blocked(&resp) {
-        return Err(FetchError::RateLimited);
     }
     match resp.status {
         200 => {}
@@ -405,6 +405,7 @@ mod tests {
         let r = |status, body: &str| crate::http::Response { status, body: body.as_bytes().to_vec() };
         assert!(super::blocked(&r(403, "<!DOCTYPE html><title>Attention Required! | Cloudflare</title>")));
         assert!(!super::blocked(&r(401, r#"{"type":"error","error":{"type":"authentication_error"}}"#)));
+        assert!(!super::blocked(&r(401, "")));
         assert!(!super::blocked(&r(503, "<html>")));
     }
 

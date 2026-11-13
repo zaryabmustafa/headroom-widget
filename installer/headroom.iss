@@ -58,30 +58,38 @@ Root: HKCU; Subkey: "Software\Headroom"; Flags: uninsdeletekey dontcreatekey
 [Run]
 Filename: "{app}\headroom.exe"; Description: "Start Headroom now"; Flags: postinstall nowait skipifsilent
 
-[UninstallRun]
-Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM headroom.exe"; Flags: runhidden; RunOnceId: "CloseHeadroom"
-
 [Code]
-function PrepareToInstall(var NeedsRestart: Boolean): String;
+const
+  RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
+
+// Closes only the copy in the install folder; a portable copy elsewhere keeps running.
+procedure CloseInstalledCopy();
 var
+  Exe, Cmd: String;
   Code: Integer;
 begin
-  // Close a running copy so its exe can be replaced.
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM headroom.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
-  Sleep(500);
+  Exe := ExpandConstant('{app}\headroom.exe');
+  StringChangeEx(Exe, '''', '''''', True);
+  Cmd := '-NoProfile -NonInteractive -Command "Get-Process headroom -ErrorAction SilentlyContinue | ' +
+    'Where-Object { $_.Path -eq ''' + Exe + ''' } | Stop-Process -Force; Start-Sleep -Milliseconds 500"';
+  Exec('powershell.exe', Cmd, '', SW_HIDE, ewWaitUntilTerminated, Code);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  CloseInstalledCopy();
   Result := '';
 end;
 
-procedure CurStepChanged(CurStep: TSetupStep);
-begin
-  // Unticked "start at sign-in" on an upgrade: drop an older Run entry.
-  if (CurStep = ssPostInstall) and not WizardIsTaskSelected('startup') then
-    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Headroom');
-end;
-
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Value: String;
 begin
-  // Also covers the value the widget's own menu wrote.
-  if CurUninstallStep = usPostUninstall then
-    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Headroom');
+  if CurUninstallStep = usUninstall then
+    CloseInstalledCopy();
+  // Remove the sign-in entry only if it starts this copy (the widget's menu writes
+  // the same value); a portable copy's entry is left alone.
+  if (CurUninstallStep = usPostUninstall) and RegQueryStringValue(HKCU, RunKey, 'Headroom', Value) and
+     (CompareText(Value, '"' + ExpandConstant('{app}\headroom.exe') + '"') = 0) then
+    RegDeleteValue(HKCU, RunKey, 'Headroom');
 end;

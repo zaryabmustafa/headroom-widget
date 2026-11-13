@@ -8,7 +8,7 @@
 //! and are marked stale.
 
 use crate::api::{parse_iso8601, FetchError, Limit, Usage};
-use crate::{http, now};
+use crate::now;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -94,10 +94,7 @@ fn get_usage(token: &str, account_id: Option<&str>) -> Result<Usage, FetchError>
     if let Some(id) = account_id {
         headers += &format!("\r\nChatGPT-Account-Id: {id}");
     }
-    let resp = http::request("GET", HOST, USAGE_PATH, &headers, None).map_err(FetchError::Other)?;
-    if crate::api::blocked(&resp) {
-        return Err(FetchError::RateLimited);
-    }
+    let resp = crate::api::send("GET", HOST, USAGE_PATH, &headers, None)?;
     match resp.status {
         200 => {}
         401 => {

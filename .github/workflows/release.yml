@@ -22,8 +22,12 @@ jobs:
 
       - name: Installer
         run: |
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; if ($LASTEXITCODE) { exit 1 } }
+          # Any installed Inno Setup version (the runner ships one); install it if missing.
+          $find = { Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup *\ISCC.exe", "$env:ProgramFiles\Inno Setup *\ISCC.exe" -ErrorAction SilentlyContinue | Select-Object -Last 1 -ExpandProperty FullName }
+          $iscc = & $find
+          if (-not $iscc) { choco install innosetup -y --no-progress; if ($LASTEXITCODE) { exit 1 }; $iscc = & $find }
+          if (-not $iscc) { throw "ISCC.exe not found" }
+          "Using $iscc"
           $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           & $iscc /Q "/DAppVersion=$v" installer\headroom.iss
           if ($LASTEXITCODE) { exit 1 }
