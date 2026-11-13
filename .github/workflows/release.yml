@@ -15,7 +15,7 @@ jobs:
   release:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - run: cargo test --locked
       - run: cargo build --release --locked
@@ -27,7 +27,7 @@ jobs:
           "sha256=$h" >> $env:GITHUB_OUTPUT
           "SHA-256 ``headroom.exe``: ``$h``" >> $env:GITHUB_STEP_SUMMARY
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: headroom.exe
           path: target/release/headroom.exe
