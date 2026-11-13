@@ -122,7 +122,7 @@ Only after reading how Codex CLI refreshes `auth.json` (endpoint, client id, whe
 
 ### Phase E — packaging
 - ~~Own icon~~ Done 2026-11-13: Headroom mark, see `docs/BRAND.md`.
-- Release build in GitHub Actions (windows-latest, `cargo build --release`), attach `headroom.exe`.
+- ~~Release build in GitHub Actions~~ Done: `.github/workflows/release.yml`. Push a `v*` tag → test, build, publish `headroom.exe` (keeps hand-written notes if the release exists). Manual run = dry run (artifact only). v0.1.0/v0.1.1 were built locally.
 - Optional: a self-updater for Headroom releases (upstream's `update.rs` was deleted; recover it from git history `9647666` if useful).
 - README screenshots.
 

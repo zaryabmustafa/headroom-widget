@@ -1,0 +1,48 @@
+name: Release
+
+# Push a tag like v0.1.2 to build, test and publish headroom.exe.
+# Run it by hand (Actions → Release → Run workflow) for a dry run: build + test,
+# exe kept as a workflow artifact, nothing published.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+
+      - name: Checksum
+        id: sum
+        run: |
+          $h = (Get-FileHash target\release\headroom.exe -Algorithm SHA256).Hash
+          "sha256=$h" >> $env:GITHUB_OUTPUT
+          "SHA-256 ``headroom.exe``: ``$h``" >> $env:GITHUB_STEP_SUMMARY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: headroom.exe
+          path: target/release/headroom.exe
+
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          SUM: ${{ steps.sum.outputs.sha256 }}
+        run: |
+          # A release written by hand keeps its notes; the exe is (re)attached.
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:TAG target/release/headroom.exe --clobber
+          } else {
+            gh release create $env:TAG target/release/headroom.exe --title "Headroom $env:TAG" --generate-notes --notes "SHA-256 ``headroom.exe``: ``$env:SUM``"
+          }
