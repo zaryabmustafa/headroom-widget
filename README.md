@@ -145,8 +145,9 @@ Delete `headroom.exe`, and optionally the `HKCU\Software\Headroom` registry key.
 
 ## Contributing
 
-Bug reports and pull requests are welcome. For anything bigger than a small fix,
-open an issue first so we can agree on the approach.
+Bug reports and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
+For anything bigger than a small fix, open an issue first so we can agree on the
+approach. Report security problems privately as described in [SECURITY.md](SECURITY.md).
 
 You need Rust (MSVC toolchain) and Visual Studio Build Tools with
 **Desktop development with C++**.

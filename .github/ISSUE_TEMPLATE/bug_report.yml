@@ -1,0 +1,55 @@
+name: Bug report
+description: Something in Headroom doesn't work or shows the wrong numbers.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did you see instead?
+    validations:
+      required: true
+  - type: textarea
+    id: tooltip
+    attributes:
+      label: What does the tooltip say?
+      description: Hover the widget and copy the text, especially any error line. Remove your email address if it appears.
+  - type: dropdown
+    id: section
+    attributes:
+      label: Which section?
+      options:
+        - Claude Code
+        - Codex
+        - RAM
+        - The widget itself (position, drawing, menu)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Headroom version
+      description: The release you downloaded, or the commit if you built it yourself.
+      placeholder: v0.1.4
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: Run `winver` to check.
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshot
+      description: A screenshot of the taskbar helps with drawing problems.

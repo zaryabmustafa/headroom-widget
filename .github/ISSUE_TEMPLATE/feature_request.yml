@@ -1,0 +1,24 @@
+name: Feature request
+description: Suggest something Headroom should show or do.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Headroom is meant to stay small. A few things are left out on purpose: writing Codex tokens, a self-updater, telemetry and CPU temperature.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What do you want to do?
+      description: Describe the problem or the need, not only the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How could Headroom help?
+  - type: textarea
+    id: other
+    attributes:
+      label: Anything else?
+      description: Screenshots, other tools that do this, or links.
