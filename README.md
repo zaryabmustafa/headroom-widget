@@ -43,18 +43,22 @@ see when you're close to a limit before you hit it.
 - **No API key:** reads the logins Claude Code and Codex already saved.
 - **Several accounts:** add more Claude Code or Codex folders and see them side by side.
 - **Light on your PC:** one native exe (Rust, Win32), about 18 MB of RAM and almost no CPU.
-- **Nothing to install:** no installer, no service, no admin rights, no telemetry.
+- **Easy to install and remove:** a small per-user installer or a single portable exe; no service, no admin rights, no telemetry.
 - **Follows your theme:** light and dark taskbars, any DPI.
 
 ## Quick start
 
 1. Sign in to [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and/or the
    [Codex CLI](https://github.com/openai/codex) at least once.
-2. Download `headroom.exe` from the [latest release](https://github.com/zaryabmustafa/headroom-widget/releases/latest)
-   and put it in a folder of your own, for example `%LOCALAPPDATA%\Programs\Headroom`.
-3. Run it. Right-click the widget and choose **Start with Windows** to launch it at sign-in.
+2. Download `headroom-setup.exe` from the [latest release](https://github.com/zaryabmustafa/headroom-widget/releases/latest)
+   and run it. It installs for your user only (no admin), adds a Start-menu shortcut,
+   and can start Headroom when you sign in.
+3. Headroom appears in the taskbar next to the clock.
 
-The exe isn't code-signed yet, so Windows SmartScreen may warn on first run:
+Prefer no installer? Download `headroom.exe` instead, put it in a folder of your own and
+run it. Right-click the widget and choose **Start with Windows** to launch it at sign-in.
+
+Neither file is code-signed yet, so Windows SmartScreen may warn on first run:
 choose **More info → Run anyway**.
 
 ## Usage
@@ -140,8 +144,12 @@ what the tooltip says and your Windows version.
 
 ### Uninstall
 
-Right-click the widget, untick **Start with Windows**, then choose **Exit**.
-Delete `headroom.exe`, and optionally the `HKCU\Software\Headroom` registry key.
+**Installed with `headroom-setup.exe`:** Settings → Apps → Installed apps → Headroom →
+**Uninstall**. It closes Headroom and removes the app, its shortcut, the sign-in entry
+and its settings.
+
+**Portable `headroom.exe`:** right-click the widget, untick **Start with Windows**, then
+choose **Exit**. Delete `headroom.exe`, and optionally the `HKCU\Software\Headroom` registry key.
 
 ## Contributing
 

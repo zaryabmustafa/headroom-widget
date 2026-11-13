@@ -195,6 +195,8 @@ Verdict: the race can't be closed from outside Codex, so the log fallback stays.
 - ✓ Own icon and brand (`docs/BRAND.md`).
 - ✓ README with screenshot and badges.
 - ✓ Release build in GitHub Actions (`docs/RELEASING.md`). First tag-triggered publish: v0.1.2, passed; notes edited by hand afterwards.
+- ✓ Installer: `installer/headroom.iss` (Inno Setup 6). Per-user to `%LOCALAPPDATA%\Programs\Headroom`, no admin, Start-menu shortcut, Apps-list entry, optional start-at-sign-in. Closes a running copy before install/uninstall; uninstall also removes the Run value and `HKCU\Software\Headroom`. Built by the release workflow as `headroom-setup.exe` next to the portable exe. Tested locally: silent install + uninstall leave nothing behind.
+- ✓ Community files (CONTRIBUTING, SECURITY, CODE_OF_CONDUCT, issue forms, PR template), CI on push/PR, rulesets on `main` and `v*` tags (admin bypass).
 - Code signing: unsigned exe → SmartScreen warning on first run.
 - Optional: a self-updater for Headroom releases (upstream's `update.rs` is in git history at `9647666`).
 

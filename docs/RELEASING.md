@@ -18,7 +18,8 @@ not on anyone's PC. Pushing a version tag is the whole process.
 
 4. **Watch it run:** Actions tab → *Release*, or `gh run watch`. It takes about 1–2 minutes.
 
-That's it. The release appears under *Releases*, marked Latest, with `headroom.exe` attached.
+That's it. The release appears under *Releases*, marked Latest, with `headroom-setup.exe`
+(installer) and `headroom.exe` (portable) attached.
 
 ## What the workflow does
 
@@ -28,9 +29,23 @@ On a `v*` tag, on `windows-latest`:
 |---|---|
 | `cargo test --locked` | A failing test stops the release |
 | `cargo build --release --locked` | Fails if `Cargo.lock` is out of date |
-| Checksum | SHA-256 of `headroom.exe`, shown in the run summary |
-| Upload artifact | The exe is also kept on the run page, so you can download it from there |
-| Publish | **No release for the tag yet:** creates one titled `Headroom vX.Y.Z` with GitHub's generated notes plus the SHA-256 line. **Release already exists:** keeps its notes and (re)attaches the exe |
+| Installer | Builds `headroom-setup.exe` from [`installer/headroom.iss`](../installer/headroom.iss) with Inno Setup (preinstalled on the runner; installed with Chocolatey if not). Its version comes from `Cargo.toml` |
+| Checksum | SHA-256 of both files, shown in the run summary |
+| Upload artifact | Both files are also kept on the run page, so you can download them from there |
+| Publish | **No release for the tag yet:** creates one titled `Headroom vX.Y.Z` with GitHub's generated notes plus the SHA-256 lines. **Release already exists:** keeps its notes and (re)attaches both files |
+
+### Building the installer locally
+
+Install Inno Setup 6 (`winget install JRSoftware.InnoSetup`), build the release exe, then:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" /DAppVersion=0.1.4 installer\headroom.iss
+```
+
+The installer lands in `target\installer\headroom-setup.exe`. Silent install for testing:
+`headroom-setup.exe /VERYSILENT /TASKS=startup`; uninstall with `unins000.exe /VERYSILENT`
+from the install folder. Uninstalling deletes `HKCU\Software\Headroom`, so export it first if
+you want to keep your settings.
 
 ### Hand-written release notes
 
@@ -58,7 +73,8 @@ tagging when you've changed the build or the workflow.
   git tag -f v0.1.2 && git push -f origin v0.1.2
   ```
 
-  The workflow replaces the exe (`--clobber`). Downloaders can't tell from the version that
+  Moving a `v*` tag is blocked by the tag ruleset for everyone but admins.
+  The workflow replaces both files (`--clobber`). Downloaders can't tell from the version that
   the exe changed, and the SHA-256 in the notes is now wrong. Prefer a new patch version.
 - **Pull a release:** `gh release delete v0.1.2 --cleanup-tag`. The download badge drops its
   counts with it.
