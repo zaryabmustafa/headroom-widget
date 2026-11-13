@@ -8,13 +8,13 @@
 
 A Windows 11 taskbar widget that shows your Claude Code and OpenAI Codex usage limits, plus RAM.
 
-[![Latest release](https://img.shields.io/github/v/release/zaryabmustafa/headroom-widget?style=for-the-badge&labelColor=1C1917&color=F59E0B&label=release)](https://github.com/zaryabmustafa/headroom-widget/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/zaryabmustafa/headroom-widget/total?style=for-the-badge&labelColor=1C1917&color=F59E0B&label=downloads)](https://github.com/zaryabmustafa/headroom-widget/releases)
-[![Build](https://img.shields.io/github/actions/workflow/status/zaryabmustafa/headroom-widget/release.yml?style=for-the-badge&labelColor=1C1917&label=build&logo=githubactions&logoColor=F59E0B)](https://github.com/zaryabmustafa/headroom-widget/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/zaryabmustafa/headroom-widget?style=flat&labelColor=44403C&color=D97706&label=release)](https://github.com/zaryabmustafa/headroom-widget/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/zaryabmustafa/headroom-widget/total?style=flat&labelColor=44403C&color=D97706&label=downloads)](https://github.com/zaryabmustafa/headroom-widget/releases)
+[![Build](https://img.shields.io/github/actions/workflow/status/zaryabmustafa/headroom-widget/release.yml?style=flat&labelColor=44403C&label=build&logo=githubactions&logoColor=F59E0B)](https://github.com/zaryabmustafa/headroom-widget/actions/workflows/release.yml)
 <br>
-![Windows 11](https://img.shields.io/badge/Windows-11-F59E0B?style=for-the-badge&labelColor=1C1917)
-![Rust](https://img.shields.io/badge/Rust-Win32-F59E0B?style=for-the-badge&labelColor=1C1917&logo=rust&logoColor=F59E0B)
-[![License](https://img.shields.io/github/license/zaryabmustafa/headroom-widget?style=for-the-badge&labelColor=1C1917&color=F59E0B)](LICENSE)
+![Windows 11](https://img.shields.io/badge/Windows-11-D97706?style=flat&labelColor=44403C)
+![Rust](https://img.shields.io/badge/Rust-Win32-D97706?style=flat&labelColor=44403C&logo=rust&logoColor=F59E0B)
+[![License](https://img.shields.io/github/license/zaryabmustafa/headroom-widget?style=flat&labelColor=44403C&color=D97706)](LICENSE)
 
 <img src="assets/screenshot.png" alt="Headroom in the taskbar: Claude 5h 29%, weekly 18%; Codex weekly 100%; RAM 74%">
 
