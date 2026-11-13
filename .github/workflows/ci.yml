@@ -1,0 +1,19 @@
+name: CI
+
+# Builds and tests every push to main and every pull request.
+# The "test" job is a required check in the main branch ruleset.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: cargo test --locked
+      - run: cargo build --release --locked
