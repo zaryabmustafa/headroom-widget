@@ -715,65 +715,74 @@ fn update_tooltip() {
     unsafe { SendMessageW(tip, TTM_UPDATETIPTEXTW, 0, &ti as *const _ as LPARAM) };
 }
 
+/// Short tooltip: one block per provider (only the limits the widget shows),
+/// then RAM · CPU, then when the numbers were fetched.
 fn tooltip_text(s: &State) -> String {
-    let mut out = String::from("Headroom");
-    let line = |name: &str, l: Option<api::Limit>, with_day: bool| -> String {
-        match l {
-            None => format!("\n  {name}: –"),
-            Some(l) => {
-                let used = l.percent.round().clamp(0.0, 100.0) as i64;
-                let mut t = format!("\n  {name}: {used}% used, {}% left", 100 - used);
-                if let Some(at) = l.resets_at {
-                    t += &format!(
-                        " · resets in {} ({})",
-                        countdown(at - now()),
-                        local_time(at, with_day)
-                    );
-                }
-                t
+    let limit = |name: &str, l: Option<api::Limit>| -> String {
+        let Some(l) = l else { return format!("  {name}  –") };
+        let used = l.percent.round().clamp(0.0, 100.0) as i64;
+        let pct = if s.show_left { format!("{}% left", 100 - used) } else { format!("{used}% used") };
+        match l.resets_at {
+            None => format!("  {name}  {pct}"),
+            // A clock time, plus a countdown when it's within a day.
+            Some(at) if at - now() < 86_400 => {
+                format!("  {name}  {pct} · resets {} (in {})", local_time(at, false), countdown(at - now()))
             }
+            Some(at) => format!("  {name}  {pct} · resets {}", local_time(at, true)),
         }
     };
+    let mut lines: Vec<String> = Vec::new();
+    let mut oldest: Option<i64> = None;
+    let mut prev: Option<Provider> = None;
     // Claude accounts first, then Codex; each in the order they were added.
     let mut accounts: Vec<&Account> = s.accounts.iter().collect();
     accounts.sort_by_key(|a| a.kind as u8);
-    for a in accounts {
-        if a.kind == Provider::Codex && s.hide_codex {
-            continue;
+    for a in accounts.into_iter().filter(|a| !(a.kind == Provider::Codex && s.hide_codex)) {
+        if prev.is_some() && prev != Some(a.kind) {
+            lines.push(String::new());
         }
-        out += &format!("\n\n{} · {}", a.kind.name(), a.label);
-        let u = a.usage.unwrap_or_default();
-        if a.usage.is_some() {
-            if u.has_five_hour {
-                out += &line("5-hour", u.five_hour, false);
+        prev = Some(a.kind);
+        lines.push(format!("{} · {}", a.kind.name(), a.label));
+        if let Some(u) = a.usage {
+            if u.has_five_hour && !s.hide_five {
+                lines.push(limit("5-hour", u.five_hour));
             }
-            out += &line("Weekly", u.weekly, true);
-            if u.fable.is_some() {
-                out += &line("Fable (weekly)", u.fable, true);
+            if !s.hide_week {
+                lines.push(limit("Weekly", u.weekly));
+            }
+            if a.kind == Provider::Claude && u.fable.is_some() && !s.hide_fable {
+                lines.push(limit("Fable", u.fable));
             }
             if u.from_log {
-                out += "\n  From Codex's logs (live once Codex refreshes its login)";
+                lines.push("  From Codex's logs; live again once Codex signs in".into());
             }
         }
-        if let Some(t) = a.last_ok {
-            out += &format!("\n  Updated {}", local_time(t, false));
+        match (&a.error, a.usage) {
+            (Some(e), _) => lines.push(format!("  ⚠ {e}")),
+            (None, None) => lines.push("  Loading…".into()),
+            _ => {}
         }
-        if let Some(e) = &a.error {
-            out += &format!("\n  ⚠ {e}");
-        } else if a.usage.is_none() {
-            out += "\n  Loading…";
+        if let Some(t) = a.last_ok {
+            oldest = Some(oldest.map_or(t, |o| o.min(t)));
         }
     }
-    if let (false, Some((pct, used, total))) = (s.hide_ram, s.ram) {
+    let mut system = Vec::new();
+    if let (false, Some((_, used, total))) = (s.hide_ram, s.ram) {
         let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
-        out += &format!("\n\nRAM: {:.1} / {:.1} GB ({}%)", gb(used), gb(total), pct.round() as i64);
+        system.push(format!("RAM {:.1} / {:.1} GB", gb(used), gb(total)));
     }
     if let Some(cpu) = s.cpu {
-        out += &format!("\nCPU: {}%", cpu.round() as i64);
+        system.push(format!("CPU {}%", cpu.round() as i64));
     }
-    out
+    if !system.is_empty() {
+        lines.push(String::new());
+        lines.push(system.join(" · "));
+    }
+    if let Some(t) = oldest {
+        lines.push(format!("Updated {}", local_time(t, false)));
+    }
+    lines.join("\n")
 }
-
 fn countdown(secs: i64) -> String {
     let m = (secs.max(0) + 59) / 60;
     let (d, h, mm) = (m / 1440, (m % 1440) / 60, m % 60);
