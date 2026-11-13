@@ -14,7 +14,7 @@ Current look (no dividers inside a section, one after each section):
 
 ## 1. Status (2026-11-13)
 
-**Released: v0.1.5** (Latest, built by GitHub Actions). Phases A–C done; D closed (stay read-only); Phase E mostly done (signing, updater left).
+**Released: v0.1.6** (Latest, built by GitHub Actions). Phases A–C done; D closed (stay read-only); Phase E mostly done (signing, updater left).
 
 | Item | State |
 |---|---|
