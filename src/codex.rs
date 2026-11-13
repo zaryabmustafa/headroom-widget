@@ -95,6 +95,9 @@ fn get_usage(token: &str, account_id: Option<&str>) -> Result<Usage, FetchError>
         headers += &format!("\r\nChatGPT-Account-Id: {id}");
     }
     let resp = http::request("GET", HOST, USAGE_PATH, &headers, None).map_err(FetchError::Other)?;
+    if crate::api::blocked(&resp) {
+        return Err(FetchError::RateLimited);
+    }
     match resp.status {
         200 => {}
         401 => {

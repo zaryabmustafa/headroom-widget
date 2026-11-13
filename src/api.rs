@@ -73,7 +73,7 @@ impl FetchError {
         match self {
             FetchError::NoLogin => "No Claude Code login found. Run `claude` and sign in.".into(),
             FetchError::LoginExpired => "Login expired. Run `claude` and sign in again.".into(),
-            FetchError::RateLimited => "Rate limited, retrying later.".into(),
+            FetchError::RateLimited => "Server busy or rate limited, retrying later.".into(),
             FetchError::Busy => "Login is being refreshed, retrying.".into(),
             FetchError::Other(s) => s.clone(),
         }
@@ -150,6 +150,12 @@ fn load_creds(dir: &Path) -> Result<Creds, FetchError> {
     })
 }
 
+/// A 401/403 whose body isn't JSON came from Cloudflare or a proxy (an HTML
+/// "Attention Required" page), not from the auth server: the login is fine.
+pub fn blocked(r: &http::Response) -> bool {
+    matches!(r.status, 401 | 403) && serde_json::from_slice::<Value>(&r.body).is_err()
+}
+
 fn needs_refresh(c: &Creds) -> bool {
     matches!(c.expires_at, Some(e) if now_ms() + REFRESH_MARGIN_MS >= e)
 }
@@ -218,6 +224,9 @@ fn refresh(dir: &Path, rejected: Option<&str>) -> Result<String, FetchError> {
         Some(body.to_string().as_bytes()),
     )
     .map_err(FetchError::Other)?;
+    if blocked(&resp) {
+        return Err(FetchError::RateLimited);
+    }
     match resp.status {
         200 => {}
         400 | 401 | 403 => {
@@ -295,6 +304,9 @@ pub fn fetch(dir: &Path) -> Result<Usage, FetchError> {
         c.access
     };
     let mut resp = get_usage(&token)?;
+    if blocked(&resp) {
+        return Err(FetchError::RateLimited);
+    }
     if resp.status == 401 {
         mark_dead(&token);
         if refresh_dead {
@@ -302,6 +314,9 @@ pub fn fetch(dir: &Path) -> Result<Usage, FetchError> {
         }
         token = refresh(dir, Some(&token))?;
         resp = get_usage(&token)?;
+    }
+    if blocked(&resp) {
+        return Err(FetchError::RateLimited);
     }
     match resp.status {
         200 => {}
@@ -385,6 +400,14 @@ pub(crate) fn parse_iso8601(s: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cloudflare_page_is_not_a_dead_login() {
+        let r = |status, body: &str| crate::http::Response { status, body: body.as_bytes().to_vec() };
+        assert!(super::blocked(&r(403, "<!DOCTYPE html><title>Attention Required! | Cloudflare</title>")));
+        assert!(!super::blocked(&r(401, r#"{"type":"error","error":{"type":"authentication_error"}}"#)));
+        assert!(!super::blocked(&r(503, "<html>")));
+    }
+
     #[test]
     fn fable() {
         let v = serde_json::json!({"limits": [
