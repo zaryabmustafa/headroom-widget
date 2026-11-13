@@ -14,7 +14,7 @@ Current look (no dividers inside a section, one after each section):
 
 ## 1. Status (2026-11-13)
 
-**Released: v0.1.1** (Latest). Phases A, B, C done (C unreleased); Phase E mostly done; D open.
+**Released: v0.1.2** (Latest, first built by GitHub Actions). Phases A–C done; D closed (stay read-only); Phase E mostly done (signing, updater left).
 
 | Item | State |
 |---|---|
@@ -27,7 +27,7 @@ Current look (no dividers inside a section, one after each section):
 | Icon edge + v0.1.1 | `dea8257`, `3954603`; built locally, published |
 | GitHub Actions release build | `82a5dd5`…`e693aa5`; dry run passes in ~1m15s, no warnings. Tag-triggered publish not yet exercised |
 | Release docs | `d63b43e`: `docs/RELEASING.md` |
-| Phase C: polish | Done (unreleased): clippy clean, tooltip grouped by provider + CPU %, click opens that section's page |
+| Phase C: polish | Done, shipped in v0.1.2: clippy clean, shorter tooltip + CPU %, click opens that section's page |
 | Tests / lint | `cargo test` 7/7; clippy clean (0 warnings) |
 
 ---
@@ -160,23 +160,27 @@ Built clean on first try; no code changes were needed.
 
 **If `wham/usage` returns 403 from Cloudflare:** the UA/header set is the suspect. Compare with Codex CLI's own request headers (`codex-rs`), not guesses.
 
-### Phase C — polish  ✓ done (unreleased; ship as v0.1.2)
+### Phase C — polish  ✓ done (v0.1.2)
 - ✓ Trademark: **keep** the OpenAI mark (owner's decision).
 - ✓ The two open Phase B checks (stale path, hover pill).
 - ✓ Clippy clean: auto-fixes, `RowKey` type alias, `sort_by_key(Reverse)`, dropped a needless `mut`.
-- ✓ Tooltip groups accounts by provider (Claude first, then Codex; stable within each).
+- ✓ Tooltip rewritten: blocks per provider (Claude first), only the limits the widget shows, `N% used` (or `left`), reset as clock time + countdown when under a day, `RAM x / y GB · CPU n%`, one `Updated` line (oldest fetch).
 - ✓ Left-click opens the clicked section's page: Claude → claude.ai usage, Codex → ChatGPT Codex usage, RAM → Task Manager. `ensure_widget` stores each section's right edge (`State::sections`) after `compose`.
 - ✓ CPU load % in the tooltip (`GetSystemTimes` delta on the 2 s RAM timer). The tooltip text refreshes on that timer only while hidden.
 - Skipped: compact mode. *Appearance → Hide labels* already gives `37% 19% | 100% | 77%`; add when width is still a problem.
 - Not yet tried with a real mouse: clicking each section.
 - Seen while testing (also in v0.1.1, so not new): after the cursor jumps between points (synthetic moves from the test tool), the tooltip can show as a one-line, cut-off box (`HeadroomClaude Code · z…`) instead of the multi-line one. Not seen with a real mouse so far. If users hit it, look at `TTF_SUBCLASS` relaying and re-sending `TTM_SETMAXTIPWIDTH` on `TTN_SHOW`.
-### Phase D — Codex token refresh (optional, gated)
-Only after reading how Codex CLI refreshes `auth.json` (endpoint, client id, whether refresh tokens rotate, any file lock). Must not log Codex CLI out. If rotation + no lock → keep read-only.
+### Phase D — Codex token refresh  ✗ closed: stay read-only (2026-11-13)
+Gate rule was "rotation + no lock → keep read-only". Findings from `openai/codex` (`codex-rs/login/src/auth/manager.rs`, `storage.rs`, `storage_commit.rs`):
+- Refresh: `POST https://auth.openai.com/oauth/token`, JSON `{grant_type: refresh_token, client_id: app_EMoamEEZ73f0CkXaXp7hrann, refresh_token}`. **Refresh tokens rotate**, and the server detects reuse (`refresh_token_reused` → Codex tells the user to log out and sign in again).
+- Codex writes `auth.json` atomically (temp + rename) under two sidecar locks (`auth.lock`, `auth.json.lock`) with compare-and-swap, and adopts tokens another process wrote. **But the network call happens outside the locks**, so two refreshers can POST the same token. Whoever is second gets `refresh_token_reused`, and if that's Codex, its session breaks.
+- Codex refreshes 5 min before the access token's `exp` (or after 8 days via `last_refresh` when `exp` is unreadable) and on 401. Credentials may also live in the OS keyring (`cli_auth_credentials_store = keyring|auto`), where `auth.json` isn't authoritative.
 
+Verdict: the race can't be closed from outside Codex, so the log fallback stays. If ever revisited, the only near-safe variant is: refresh only after `exp` has passed, only while no `codex` process runs, only in `File` store mode, mirror Codex's locked compare-and-swap write, and never retry after a reuse/expired/invalid_grant error.
 ### Phase E — packaging  (mostly done)
 - ✓ Own icon and brand (`docs/BRAND.md`).
 - ✓ README with screenshot and badges.
-- ✓ Release build in GitHub Actions (`docs/RELEASING.md`). First tag-triggered publish happens on the next release; watch it.
+- ✓ Release build in GitHub Actions (`docs/RELEASING.md`). First tag-triggered publish: v0.1.2, passed; notes edited by hand afterwards.
 - Code signing: unsigned exe → SmartScreen warning on first run.
 - Optional: a self-updater for Headroom releases (upstream's `update.rs` is in git history at `9647666`).
 
