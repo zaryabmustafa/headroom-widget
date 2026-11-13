@@ -27,7 +27,7 @@ jobs:
           "sha256=$h" >> $env:GITHUB_OUTPUT
           "SHA-256 ``headroom.exe``: ``$h``" >> $env:GITHUB_STEP_SUMMARY
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: headroom.exe
           path: target/release/headroom.exe
