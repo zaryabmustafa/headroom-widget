@@ -50,6 +50,24 @@ pub enum FetchError {
     Other(String),
 }
 
+/// Tokens a server has refused (Claude or Codex, access or refresh). Never sent
+/// again: retrying a dead login every poll is what gets clients flagged. A new
+/// token appears when Claude Code / Codex signs in or refreshes, and that one is tried.
+static DEAD: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+pub fn is_dead(token: &str) -> bool {
+    DEAD.lock().is_ok_and(|d| d.iter().any(|t| t == token))
+}
+
+pub fn mark_dead(token: &str) {
+    if let Ok(mut d) = DEAD.lock() {
+        if d.len() >= 16 {
+            d.remove(0); // logins rotate rarely; keep the newest few
+        }
+        d.push(token.to_string());
+    }
+}
+
 impl FetchError {
     pub fn message(&self) -> String {
         match self {
@@ -202,7 +220,10 @@ fn refresh(dir: &Path, rejected: Option<&str>) -> Result<String, FetchError> {
     .map_err(FetchError::Other)?;
     match resp.status {
         200 => {}
-        400 | 401 | 403 => return Err(FetchError::LoginExpired),
+        400 | 401 | 403 => {
+            mark_dead(&refresh_token);
+            return Err(FetchError::LoginExpired);
+        }
         429 => return Err(FetchError::RateLimited),
         s => return Err(FetchError::Other(format!("Token refresh failed (HTTP {s})"))),
     }
@@ -257,15 +278,39 @@ fn get_usage(token: &str) -> Result<http::Response, FetchError> {
 /// Fetches usage for the Claude Code login stored in `dir`.
 pub fn fetch(dir: &Path) -> Result<Usage, FetchError> {
     let c = load_creds(dir)?;
-    let mut token = if needs_refresh(&c) { refresh(dir, None)? } else { c.access };
+    // A login the server already refused: wait for Claude Code to sign in again.
+    let refresh_dead = c.refresh.as_deref().is_none_or(is_dead);
+    if is_dead(&c.access) && refresh_dead {
+        return Err(FetchError::LoginExpired);
+    }
+    let mut token = if is_dead(&c.access) {
+        // Refused before; `rejected` makes refresh() renew it rather than hand it back.
+        refresh(dir, Some(&c.access))?
+    } else if needs_refresh(&c) {
+        if refresh_dead {
+            return Err(FetchError::LoginExpired);
+        }
+        refresh(dir, None)?
+    } else {
+        c.access
+    };
     let mut resp = get_usage(&token)?;
     if resp.status == 401 {
+        mark_dead(&token);
+        if refresh_dead {
+            return Err(FetchError::LoginExpired);
+        }
         token = refresh(dir, Some(&token))?;
         resp = get_usage(&token)?;
     }
     match resp.status {
         200 => {}
-        401 | 403 => return Err(FetchError::LoginExpired),
+        401 => {
+            mark_dead(&token);
+            return Err(FetchError::LoginExpired);
+        }
+        // Not a bad token (e.g. no access to usage): retried at the normal pace.
+        403 => return Err(FetchError::LoginExpired),
         429 => return Err(FetchError::RateLimited),
         s => return Err(FetchError::Other(format!("Usage request failed (HTTP {s})"))),
     }

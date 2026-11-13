@@ -72,6 +72,14 @@ Current look (no dividers inside a section, one after each section):
 - No leaks: GDI, USER, handles and memory flat across repeated fetches and 100+ forced redraws (hover stress). Handles rise ~40 during a fetch (WinHTTP + thread) and return. GDI settles at 14 / USER 18 once the tooltip has been shown (its one-time objects).
 - Fonts are cached across redraws (`render::font`, keyed by size + face): redraw ≈ 0.75 ms, down from ≈ 1.8 ms.
 - Repeated restarts in quick succession can trigger HTTP 429 from the Claude usage endpoint ("Rate limited, retrying later"); it backs off (up to 10 min) and recovers by itself.
+**Staying a quiet client** (after a 429 caused by many test restarts)
+Every request path, Claude and Codex:
+- Poll: default 2 min; **minimum 1 min** (the 30 s option is gone; a saved 30 falls back to 2 min).
+- Startup: no request if the last one (any instance) was under 60 s ago. `HKCU\Software\Headroom\LastFetch` (unix s); the first fetch is scheduled for when the minute is up.
+- 429: interval doubles per consecutive 429, capped at 10 min. Codex no longer hides a 429 behind the log fallback (it used to report success and keep the normal pace). A Codex 403 (usually Cloudflare) backs off the same way.
+- Refused logins are never resent (`api::mark_dead` / `is_dead`): a Claude refresh token rejected by the token endpoint, or an access token that got a 401 (Claude or Codex), isn't used again. Nothing more is sent until Claude Code / Codex writes a new token. Before, a dead Claude login meant a usage GET + token refresh POST every poll, forever. Claude 403 (not a token problem) stays a single GET per poll.
+- Codex with an expired token: no request at all (logs only), as before.
+- Test: `codex::tests::dead_token_not_resent`.
 ## 3. Decisions (settled — don't relitigate)
 
 | Decision | Why |
@@ -136,6 +144,7 @@ Upstream DWORDs (IntervalSeconds, FontSize, IconSize, HideIcon, PixelIcon, Rings
 | `HideCodex` | DWORD | Hide Codex section |
 | `HideRam` | DWORD | Hide RAM section |
 | `HideFable` | DWORD | **Absent → hidden** (Headroom default; upstream showed it). `0` shows it |
+| `LastFetch` | DWORD | Unix seconds of the last request; spaces requests across restarts |
 
 Autostart: `HKCU\…\Run\Headroom`. Single instance: mutex `Local\Headroom.Singleton`.
 

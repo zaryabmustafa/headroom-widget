@@ -66,8 +66,8 @@ const ID_ICON_SIZE_BASE: usize = 500; // + index into ICON_SIZES
 const ID_INTERVAL_BASE: usize = 100; // + index into INTERVALS
 
 /// Update interval choices (seconds, menu label).
-const INTERVALS: [(u32, &str); 7] = [
-    (30, "30 seconds"),
+/// No faster than once a minute: these are undocumented endpoints, so stay a quiet client.
+const INTERVALS: [(u32, &str); 6] = [
     (60, "1 minute"),
     (120, "2 minutes"),
     (300, "5 minutes"),
@@ -76,6 +76,8 @@ const INTERVALS: [(u32, &str); 7] = [
     (1800, "30 minutes"),
 ];
 const DEFAULT_INTERVAL: u32 = 120;
+/// Minimum time between a request and the next one made at startup.
+const MIN_FETCH_GAP_SECS: i64 = 60;
 
 /// Font size choices (pixels at 100% scaling, menu label).
 const FONT_SIZES: [(u32, &str); 6] = [
@@ -295,7 +297,7 @@ fn main() {
             s.taskbar_created_msg = msg;
             s.dark = system_dark();
             s.interval = read_setting("IntervalSeconds")
-                .filter(|v| (30..=1800).contains(v))
+                .filter(|v| (60..=1800).contains(v))
                 .unwrap_or(DEFAULT_INTERVAL);
             s.show_left = read_setting("ShowRemaining") == Some(1);
             s.icon_size = read_setting("IconSize")
@@ -330,7 +332,16 @@ fn main() {
         SetTimer(ctl, T_LAYOUT, 1000, None);
         SetTimer(ctl, T_TICK, 30_000, None);
         SetTimer(ctl, T_RAM, RAM_EVERY_MS, None);
-        start_fetch_all();
+        // Restarting shouldn't mean asking again: keep a minute since the last
+        // request (any instance), so quick restarts don't burst the servers.
+        let wait = read_setting("LastFetch").map_or(0, |t| t as i64 + MIN_FETCH_GAP_SECS - now());
+        if wait > 0 {
+            for id in with(|s| s.accounts.iter().map(|a| a.id).collect::<Vec<_>>()) {
+                SetTimer(ctl, T_FETCH_BASE + id as usize, wait as u32 * 1000, None);
+            }
+        } else {
+            start_fetch_all();
+        }
 
         let mut m: MSG = std::mem::zeroed();
         while GetMessageW(&mut m, null_mut(), 0, 0) > 0 {
@@ -353,6 +364,7 @@ fn start_fetch(id: u32) {
     });
     let Some((ctl, dir, kind)) = job else { return };
     unsafe { KillTimer(ctl as HWND, T_FETCH_BASE + id as usize) };
+    write_setting("LastFetch", now() as u32);
     std::thread::spawn(move || {
         let r = kind.fetch(&dir);
         let label = kind.label(&dir);

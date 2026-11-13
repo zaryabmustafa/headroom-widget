@@ -68,11 +68,15 @@ pub fn fetch(dir: &Path) -> Result<Usage, FetchError> {
         .and_then(|p| p["exp"].as_i64())
         .is_some_and(|exp| exp <= now() + 30);
 
-    let live_err = if expired {
+    // Expired or already refused: no request until Codex writes a new token.
+    let live_err = if expired || crate::api::is_dead(access) {
         FetchError::Other("Codex login expired. Showing the last numbers from Codex's logs; run `codex` to refresh.".into())
     } else {
         match get_usage(access, account_id) {
             Ok(u) => return Ok(u),
+            // Pass throttling up instead of hiding it behind the logs, so the
+            // caller backs off rather than asking again at the normal pace.
+            Err(FetchError::RateLimited) => return Err(FetchError::RateLimited),
             Err(e) => e,
         }
     };
@@ -93,10 +97,12 @@ fn get_usage(token: &str, account_id: Option<&str>) -> Result<Usage, FetchError>
     let resp = http::request("GET", HOST, USAGE_PATH, &headers, None).map_err(FetchError::Other)?;
     match resp.status {
         200 => {}
-        401 | 403 => {
-            return Err(FetchError::Other("Codex login rejected. Run `codex` to sign in again.".into()))
+        401 => {
+            crate::api::mark_dead(token);
+            return Err(FetchError::Other("Codex login rejected. Run `codex` to sign in again.".into()));
         }
-        429 => return Err(FetchError::RateLimited),
+        // 403 here is usually Cloudflare refusing the request: back off like a 429.
+        403 | 429 => return Err(FetchError::RateLimited),
         s => return Err(FetchError::Other(format!("Codex usage request failed (HTTP {s})"))),
     }
     let v: Value = serde_json::from_slice(&resp.body)
@@ -304,5 +310,23 @@ mod tests {
         let p = super::jwt_payload(t).unwrap();
         assert_eq!(p["email"], "a@b.c");
         assert_eq!(p["exp"], 1);
+    }
+
+    /// A refused, unexpired token must not be sent again (no request at all).
+    #[test]
+    fn dead_token_not_resent() {
+        let dir = std::env::temp_dir().join(format!("headroom-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // {"exp":4102444800} = year 2100, so only the dead-token check can stop the request.
+        let token = "x.eyJleHAiOjQxMDI0NDQ4MDB9.y";
+        std::fs::write(dir.join("auth.json"), json!({"tokens": {"access_token": token}}).to_string()).unwrap();
+        crate::api::mark_dead(token);
+        let msg = match super::fetch(&dir) {
+            Err(e) => e.message(),
+            Ok(_) => String::new(),
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        // "expired" = skipped locally; a request would have come back "rejected".
+        assert!(msg.contains("expired"), "{msg}");
     }
 }
