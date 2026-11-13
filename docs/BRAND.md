@@ -28,6 +28,7 @@ Palette "Ember" (picked 2026-11-13 over graphite+mint, traffic, aurora, ink, lim
 | Token | Hex | Use |
 |---|---|---|
 | Charcoal | `#1C1917` | Tile / background |
+| Edge | `#57534E` | 0.5-unit inner outline, so the tile reads on dark backgrounds |
 | Ceiling | `#FAFAF9` | Ceiling bar, text on dark |
 | Amber | `#F59E0B` | Meters, accent |
 

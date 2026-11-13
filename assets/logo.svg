@@ -1,6 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="256" height="256">
   <!-- Headroom mark: three meters under a ceiling; the gap is the headroom. 16-unit grid. -->
   <rect width="16" height="16" rx="3.5" fill="#1C1917"/>
+  <rect x="0.25" y="0.25" width="15.5" height="15.5" rx="3.25" fill="none" stroke="#57534E" stroke-width="0.5"/>
   <rect x="3" y="3" width="10" height="1" rx="0.5" fill="#FAFAF9"/>
   <rect x="3" y="9" width="2" height="4" rx="0.4" fill="#F59E0B"/>
   <rect x="7" y="6" width="2" height="7" rx="0.4" fill="#F59E0B"/>
