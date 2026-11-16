@@ -1,1 +1,6 @@
 /target
+# Impeccable: local design-session state (decision pages, captures, build scratch)
+/.impeccable/build/
+/.impeccable/mocks/
+/.impeccable/review/
+/.impeccable/hook.cache.json

@@ -16,7 +16,7 @@ A Windows 11 taskbar widget that shows your Claude Code and OpenAI Codex usage l
 ![Rust](https://img.shields.io/badge/Rust-Win32-D97706?style=flat&labelColor=44403C&logo=rust&logoColor=F59E0B)
 [![License](https://img.shields.io/github/license/zaryabmustafa/headroom-widget?style=flat&labelColor=44403C&color=D97706)](LICENSE)
 
-<img src="assets/screenshot.png" alt="Headroom in the taskbar: Claude 5h 29%, weekly 18%; Codex weekly 100%; RAM 74%">
+<img src="assets/screenshot.png" alt="Headroom in the taskbar: Claude 5h 2%, weekly 99%; Codex weekly 34%; RAM 85%; CPU 22%; drives C 65%, D 90%, E 85%">
 
 **[Download](https://github.com/zaryabmustafa/headroom-widget/releases/latest)** ·
 [Features](#features) ·
@@ -39,7 +39,9 @@ see when you're close to a limit before you hit it.
 
 - **Claude Code limits:** 5-hour and weekly usage, plus Fable if you turn it on.
 - **Codex limits:** 5-hour and weekly usage from your Codex CLI login.
-- **RAM:** memory in use, updated every 2 seconds.
+- **RAM and CPU:** memory in use and CPU load, updated every 2 seconds.
+- **Drives:** space used on your internal drives.
+- **Settings window:** each section has its own look (remaining or used, labels, icon, rings), with a live preview.
 - **No API key:** reads the logins Claude Code and Codex already saved.
 - **Several accounts:** add more Claude Code or Codex folders and see them side by side.
 - **Light on your PC:** one native exe (Rust, Win32), about 18 MB of RAM and almost no CPU.
@@ -68,9 +70,12 @@ choose **More info → Run anyway**.
 | **Claude Code** | `5h` and `W` (weekly) used %, plus `F` (Fable) if you turn it on | Claude's usage page |
 | **Codex** | `5h` and `W` used % (plans with only a weekly limit show just `W`) | Codex's usage page |
 | **RAM** | Memory in use, % | Task Manager |
+| **CPU** | Load over the last 2 seconds, % | Task Manager |
+| **Drives** | Space used on up to three internal drives, as % or size (used or free, e.g. `D 26.2 GB`) | This PC |
 
-Hover for details: who's signed in, when each limit resets, and used / total GB
-of RAM. Values turn orange at 80% and red at 95%.
+Hover for details: who's signed in, when each limit resets, used / total GB of RAM and
+of each drive. Values turn orange above 75% and red above 95%, as in Claude Code.
+Vertical taskbars (ExplorerPatcher, Windhawk, Windows 10) get a stacked layout.
 
 ### Menu
 
@@ -78,11 +83,18 @@ Right-click the widget:
 
 | Item | What's inside |
 |---|---|
-| **Show** | 5-hour, Weekly and Fable limits · Codex · RAM |
-| **Appearance** | Font size, Icon · remaining instead of used · labels · rolling numbers · usage rings · left side of the taskbar |
-| **Accounts** | Add a Claude Code folder (`.claude`, `CLAUDE_CONFIG_DIR`) or a Codex folder (`.codex`, `CODEX_HOME`) · remove · accounts per column |
-| **Update every** | Refresh interval, 1 to 30 minutes |
-| | Start with Windows · Refresh now · Open Claude / Codex usage page · Exit |
+| **Show** | Turn Claude, Codex, RAM, CPU or Drives on and off |
+| **Accounts** | Add a Claude Code folder (`.claude`, `CLAUDE_CONFIG_DIR`) or a Codex folder (`.codex`, `CODEX_HOME`) · remove |
+| **Settings…** | One page per section (limits or drives shown, remaining or used, labels, icon, usage rings) and General (font and icon size, update interval, accounts per column, rolling numbers, left side, Start with Windows) |
+| | Refresh now · Open Claude / Codex usage page · Exit |
+
+### Settings
+
+<img src="assets/settings.png" width="720" alt="Headroom settings: a section rail on the left, a live preview of the widget at the top, and the Claude Code page with limits, three rendered style choices and details">
+
+The preview at the top is the widget as your taskbar will show it, and also the way in:
+click a section to edit it, or a dimmed one to turn it back on. Each style choice is
+drawn as the real thing, and every change applies to the taskbar straight away.
 
 Settings live in `HKCU\Software\Headroom`.
 
@@ -93,6 +105,8 @@ Settings live in `HKCU\Software\Headroom`.
 | **Claude Code** | `%USERPROFILE%\.claude\.credentials.json` | `api.anthropic.com/api/oauth/usage`. Refreshes the login the same way Claude Code does |
 | **Codex** | `%USERPROFILE%\.codex\auth.json` (or `CODEX_HOME`) | `chatgpt.com/backend-api/wham/usage`. Read-only: when the token has expired, it shows the last `rate_limits` event from `.codex\sessions`, dimmed |
 | **RAM** | `GlobalMemoryStatusEx` | Nothing |
+| **CPU** | `GetSystemTimes` | Nothing |
+| **Drives** | `GetDiskFreeSpaceExW`, every 60 seconds | Nothing |
 
 Each section fails on its own, so if one is down it shows `–` and the others carry on.
 
@@ -177,7 +191,12 @@ by Abdo Sarmini and has since been largely rebuilt: Codex and RAM sections, the
 redesigned widget and menu, multiple accounts, quieter networking, the installer
 and the release pipeline.
 
-MIT; see [LICENSE](LICENSE). The RAM icon is Lucide's `memory-stick` (ISC).
+MIT; see [LICENSE](LICENSE). The RAM, CPU and drive icons are Lucide's `memory-stick`,
+`cpu` and `hard-drive` (ISC).
+
+[![Made with Slint](https://raw.githubusercontent.com/slint-ui/slint/master/logo/MadeWithSlint-logo-whitebg.png)](https://slint.dev)
+
+The settings window is made with [Slint](https://slint.dev), under its royalty-free licence.
 
 Unofficial: not affiliated with Anthropic or OpenAI. Claude and the OpenAI logo
 are their owners' trademarks and are used only to label the sections.
