@@ -57,6 +57,7 @@ const ID_CLAUDE_ICON: usize = 19;
 const ID_HIDE_CODEX: usize = 20;
 const ID_HIDE_RAM: usize = 21;
 const ID_OPEN_CODEX: usize = 22;
+const ID_HIDE_CLAUDE: usize = 23;
 const ID_ADD_ACCOUNT: usize = 7;
 const ID_REMOVE_BASE: usize = 300; // + index into accounts
 const ID_PER_COL_BASE: usize = 400; // + accounts per column (1 to 3)
@@ -111,6 +112,7 @@ struct RenderKey {
     rows: Vec<RowKey>,
     /// Rounded memory use, when shown.
     ram: Option<i64>,
+    hide_claude: bool,
     hide_codex: bool,
     hide_five_codex: bool,
     show_left: bool,
@@ -223,6 +225,7 @@ struct State {
     hide_week: bool,
     hide_fable: bool,
     /// Leave out the Codex section, or the RAM readout.
+    hide_claude: bool,
     hide_codex: bool,
     hide_ram: bool,
     /// Memory: percent used, used bytes, total bytes.
@@ -242,7 +245,7 @@ thread_local! {
         taskbar_created_msg: 0, accounts: Vec::new(), next_id: 0,
         hover: false, dark: false, rendered: None, pos: (0, 0, 0, 0),
         interval: DEFAULT_INTERVAL, show_left: false,
-        font_size: DEFAULT_FONT_SIZE, icon_size: DEFAULT_ICON_SIZE, hide_icon: false, hide_labels: false, on_left: false, pixel_icon: false, rings: false, ring_text: false, roll: false, hide_five: false, hide_week: false, hide_fable: false, hide_codex: false, hide_ram: false, ram: None, rows_per_col: DEFAULT_PER_COL,
+        font_size: DEFAULT_FONT_SIZE, icon_size: DEFAULT_ICON_SIZE, hide_icon: false, hide_labels: false, on_left: false, pixel_icon: false, rings: false, ring_text: false, roll: false, hide_five: false, hide_week: false, hide_fable: false, hide_claude: false, hide_codex: false, hide_ram: false, ram: None, rows_per_col: DEFAULT_PER_COL,
         cpu: None, cpu_prev: (0, 0), sections: Vec::new(),
     }) };
 }
@@ -316,6 +319,7 @@ fn main() {
             s.hide_five = read_setting("HideFiveHour") == Some(1);
             s.hide_week = read_setting("HideWeekly") == Some(1);
             s.hide_fable = read_setting("HideFable") != Some(0); // hidden unless turned on
+            s.hide_claude = read_setting("HideClaude") == Some(1);
             s.hide_codex = read_setting("HideCodex") == Some(1);
             s.hide_ram = read_setting("HideRam") == Some(1);
             s.rows_per_col = read_setting("AccountsPerColumn")
@@ -554,6 +558,7 @@ fn ensure_widget() {
                     })
                     .collect(),
                 ram: pct(ram),
+                hide_claude: s.hide_claude,
                 hide_codex: s.hide_codex,
                 hide_five_codex,
                 show_left: s.show_left,
@@ -602,7 +607,7 @@ fn ensure_widget() {
             // Each section's model, and which provider it is (None = RAM) for clicks.
             let mut models = Vec::new();
             let claude_rows = rows_of(Provider::Claude);
-            if !claude_rows.is_empty() {
+            if !claude_rows.is_empty() && !s.hide_claude {
                 models.push((model(claude_rows, claude_mark, usage_labels, [hide_five, s.hide_week, s.hide_fable], false), Some(Provider::Claude)));
             }
             let codex_rows = rows_of(Provider::Codex);
@@ -753,7 +758,7 @@ fn tooltip_text(s: &State) -> String {
     // Claude accounts first, then Codex; each in the order they were added.
     let mut accounts: Vec<&Account> = s.accounts.iter().collect();
     accounts.sort_by_key(|a| a.kind as u8);
-    for a in accounts.into_iter().filter(|a| !(a.kind == Provider::Codex && s.hide_codex)) {
+    for a in accounts.into_iter().filter(|a| !(a.kind == Provider::Codex && s.hide_codex || a.kind == Provider::Claude && s.hide_claude)) {
         if prev.is_some() && prev != Some(a.kind) {
             lines.push(String::new());
         }
@@ -1086,12 +1091,18 @@ unsafe fn show_menu() {
     let tick = |id: usize| if setting_checked(id) == Some(true) { MF_STRING | MF_CHECKED } else { MF_STRING };
     // Show: what's on the taskbar.
     let show = CreatePopupMenu();
-    AppendMenuW(show, tick(ID_HIDE_FIVE), ID_HIDE_FIVE, w!("5-hour limit"));
-    AppendMenuW(show, tick(ID_HIDE_WEEK), ID_HIDE_WEEK, w!("Weekly limit"));
-    AppendMenuW(show, tick(ID_HIDE_FABLE), ID_HIDE_FABLE, w!("Fable limit"));
-    AppendMenuW(show, MF_SEPARATOR, 0, null());
+    // Sections first, then which limits each usage section shows.
+    let (no_claude, no_usage) = with(|s| (s.hide_claude, s.hide_claude && s.hide_codex));
+    let grey = |flags: MENU_ITEM_FLAGS, off: bool| if off { flags | MF_GRAYED } else { flags };
+    AppendMenuW(show, MF_STRING | MF_GRAYED, 0, w!("Sections"));
+    AppendMenuW(show, tick(ID_HIDE_CLAUDE), ID_HIDE_CLAUDE, w!("Claude"));
     AppendMenuW(show, tick(ID_HIDE_CODEX), ID_HIDE_CODEX, w!("Codex"));
     AppendMenuW(show, tick(ID_HIDE_RAM), ID_HIDE_RAM, w!("RAM"));
+    AppendMenuW(show, MF_SEPARATOR, 0, null());
+    AppendMenuW(show, MF_STRING | MF_GRAYED, 0, w!("Limits"));
+    AppendMenuW(show, grey(tick(ID_HIDE_FIVE), no_usage), ID_HIDE_FIVE, w!("5-hour"));
+    AppendMenuW(show, grey(tick(ID_HIDE_WEEK), no_usage), ID_HIDE_WEEK, w!("Weekly"));
+    AppendMenuW(show, grey(tick(ID_HIDE_FABLE), no_claude), ID_HIDE_FABLE, w!("Fable (Claude only)"));
     AppendMenuW(menu, MF_POPUP, show as usize, w!("Show"));
 
     // Appearance: how it looks.
@@ -1210,6 +1221,7 @@ fn setting_checked(id: usize) -> Option<bool> {
             ID_HIDE_FIVE => !s.hide_five,
             ID_HIDE_WEEK => !s.hide_week,
             ID_HIDE_FABLE => !s.hide_fable,
+            ID_HIDE_CLAUDE => !s.hide_claude,
             ID_HIDE_CODEX => !s.hide_codex,
             ID_HIDE_RAM => !s.hide_ram,
             ID_HIDE_ICON => s.hide_icon,
@@ -1290,6 +1302,15 @@ fn apply_setting(id: usize) -> bool {
             });
             write_setting("HideFable", on as u32);
             ensure_widget();
+        }
+        ID_HIDE_CLAUDE => {
+            let on = with(|s| {
+                s.hide_claude = !s.hide_claude;
+                s.hide_claude
+            });
+            write_setting("HideClaude", on as u32);
+            ensure_widget();
+            update_tooltip();
         }
         ID_HIDE_CODEX => {
             let on = with(|s| {
