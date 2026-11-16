@@ -9,7 +9,7 @@
 //! shows exactly what the taskbar will.
 
 use crate::*;
-use slint::{ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
+use slint::{ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
 slint::slint! {
     #[edition = "1.19"]
@@ -1005,18 +1005,6 @@ pub fn run() {
     ui.set_bar(if with(|s| s.dark) { slint::Color::from_rgb_u8(0x20, 0x20, 0x20) } else { slint::Color::from_rgb_u8(0xEE, 0xEE, 0xEE) });
     ui.set_gear(icon(render::Mark::None));
     ui.set_app_icon(logo(64));
-    // The title bar joins the window's charcoal instead of the system grey.
-    slint::Timer::single_shot(std::time::Duration::from_millis(50), || unsafe {
-        use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE};
-        let hwnd = FindWindowW(null(), TITLE);
-        if hwnd.is_null() {
-            return;
-        }
-        // COLORREF is 0x00BBGGRR.
-        for (attr, v) in [(DWMWA_USE_IMMERSIVE_DARK_MODE, 1u32), (DWMWA_CAPTION_COLOR, 0x0017_191C), (DWMWA_TEXT_COLOR, 0x00F9_FAFA)] {
-            DwmSetWindowAttribute(hwnd, attr as u32, &v as *const u32 as *const _, 4);
-        }
-    });
     ui.set_font_sizes(strings(FONT_SIZES.iter().map(|f| f.1).collect()));
     ui.set_icon_sizes(strings(ICON_SIZES.iter().map(|f| f.1).collect()));
     ui.set_intervals(strings(INTERVALS.iter().map(|f| f.1.trim_end_matches("utes").trim_end_matches("ute")).collect()));
@@ -1048,17 +1036,69 @@ pub fn run() {
         }
     });
     select(&ui, 0);
-    // Keep RAM and CPU moving in the preview and the rail.
+    when_shown(ui.as_weak(), 100);
+    // Keep RAM and CPU moving, and follow changes made from the widget's menu.
     let weak = ui.as_weak();
     let timer = slint::Timer::default();
     timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(RAM_EVERY_MS as u64), move || {
         sample_cpu();
         sample_ram();
+        let before = with(|s| s.hidden);
+        with(load_settings);
+        if let Some(ui) = weak.upgrade() {
+            if with(|s| s.hidden) != before {
+                select(&ui, ui.get_page()); // a page built on the old values
+            } else {
+                refresh(&ui);
+            }
+        }
+    });
+    ui.run().expect("settings window");
+}
+
+thread_local! {
+    /// Section marks for the rail and the preview's off slots, drawn once.
+    static SECTION_ICONS: Vec<Image> = (0..SECTIONS.len()).map(|i| icon(section_mark(i))).collect();
+}
+
+/// Puts `rows` into a window list in place when its length is unchanged, so the
+/// items (and keyboard focus, hover) survive the 2-second refresh.
+fn sync<T: Clone + 'static>(model: ModelRc<T>, rows: Vec<T>, set: impl FnOnce(ModelRc<T>)) {
+    match model.as_any().downcast_ref::<VecModel<T>>() {
+        Some(list) if list.row_count() == rows.len() => {
+            for (i, row) in rows.into_iter().enumerate() {
+                list.set_row_data(i, row);
+            }
+        }
+        _ => set(ModelRc::new(VecModel::from(rows))),
+    }
+}
+
+/// Once the window exists: give its title bar the window's charcoal instead of the
+/// system grey, and redraw the previews at its real scale. Tries every 50 ms.
+fn when_shown(weak: slint::Weak<SettingsWindow>, tries: u32) {
+    slint::Timer::single_shot(std::time::Duration::from_millis(50), move || unsafe {
+        use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE};
+        use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+        let hwnd = FindWindowW(null(), TITLE);
+        let mut pid = 0;
+        if !hwnd.is_null() {
+            GetWindowThreadProcessId(hwnd, &mut pid);
+        }
+        if hwnd.is_null() || pid != GetCurrentProcessId() {
+            if tries > 0 {
+                when_shown(weak, tries - 1);
+            }
+            return;
+        }
+        // COLORREF is 0x00BBGGRR.
+        for (attr, v) in [(DWMWA_USE_IMMERSIVE_DARK_MODE, 1u32), (DWMWA_CAPTION_COLOR, 0x0017_191C), (DWMWA_TEXT_COLOR, 0x00F9_FAFA)] {
+            DwmSetWindowAttribute(hwnd, attr as u32, &v as *const u32 as *const _, 4);
+        }
         if let Some(ui) = weak.upgrade() {
             refresh(&ui);
         }
     });
-    ui.run().expect("settings window");
 }
 
 /// Opens a section's page (0 to 4), or General (5).
@@ -1082,7 +1122,7 @@ fn refresh(ui: &SettingsWindow) {
         (render::compose(&frames, h, scale * zoom, dark, false, false), h)
     };
     // Hidden sections' slots (74 px each) share the room with the widget.
-    let room = PREVIEW_ROOM - 74.0 * with(|s| (0..SECTIONS.len()).filter(|&i| section_hidden(s, i)).count()) as f32;
+    let room = PREVIEW_ROOM - 74.0 * with(|s| (0..SECTIONS.len()).filter(|&i| s.hidden[i]).count()) as f32;
     let ((mut frame, mut ends), _) = draw(PREVIEW_ZOOM);
     if frame.w as f32 / scale > room {
         ((frame, ends), _) = draw((PREVIEW_ZOOM * room * scale / frame.w as f32).max(0.6));
@@ -1090,8 +1130,8 @@ fn refresh(ui: &SettingsWindow) {
     let px = |v: i32| v as f32 / scale;
     let mut spots = Vec::new();
     let mut left = 0;
-    for ((m, target), end) in models.iter().zip(&ends) {
-        let index = section_of(m, *target);
+    for ((_, index), end) in models.iter().zip(&ends) {
+        let index = *index;
         spots.push(Spot { x: px(left), w: px(end - left), index: index as i32, name: SECTION_NAMES[index].into() });
         left = *end;
     }
@@ -1101,7 +1141,7 @@ fn refresh(ui: &SettingsWindow) {
     ui.set_preview(image(&frame));
     ui.set_preview_width(px(frame.w));
     ui.set_preview_height(px(frame.h));
-    ui.set_spots(ModelRc::new(VecModel::from(spots)));
+    sync(ui.get_spots(), spots, |m| ui.set_spots(m));
 
     // The rail: each section's name, what it reads now, and whether it's shown.
     let items: Vec<SectionItem> = with(|s| {
@@ -1123,12 +1163,12 @@ fn refresh(ui: &SettingsWindow) {
         ];
         (0..SECTIONS.len())
             .map(|i| {
-                let shown = !section_hidden(s, i);
+                let shown = !s.hidden[i];
                 SectionItem {
                     name: SECTION_NAMES[i].into(),
                     value: if shown { values[i].clone().into() } else { "Off".into() },
                     shown,
-                    icon: icon(section_mark(i)),
+                    icon: SECTION_ICONS.with(|icons| icons[i].clone()),
                 }
             })
             .collect()
@@ -1139,8 +1179,8 @@ fn refresh(ui: &SettingsWindow) {
         .filter(|(_, it)| !it.shown)
         .map(|(i, it)| Ghost { name: it.name.clone(), index: i as i32, icon: it.icon.clone() })
         .collect();
-    ui.set_sections(ModelRc::new(VecModel::from(items)));
-    ui.set_ghosts(ModelRc::new(VecModel::from(ghosts)));
+    sync(ui.get_sections(), items, |m| ui.set_sections(m));
+    sync(ui.get_ghosts(), ghosts, |m| ui.set_ghosts(m));
 
     // The three style tiles: this section drawn plain, with rings, with numbers in rings.
     if (0..5).contains(&page) {
@@ -1149,44 +1189,23 @@ fn refresh(ui: &SettingsWindow) {
     }
 }
 
-/// Which section (0 to 4) a model draws.
-fn section_of(m: &render::Model, target: Target) -> usize {
-    match target {
-        Target::Usage(Provider::Claude) => CLAUDE,
-        Target::Usage(Provider::Codex) => CODEX,
-        Target::ThisPc => DRIVES,
-        Target::TaskManager if m.mark == render::Mark::Ram || m.labels[0] == "RAM" => RAM,
-        Target::TaskManager => CPU,
-    }
-}
-
 fn section_mark(i: usize) -> render::Mark {
     [render::Mark::Claude, render::Mark::Codex, render::Mark::Ram, render::Mark::Cpu, render::Mark::Drive][i]
-}
-
-fn hidden_flag(s: &mut State, i: usize) -> &mut bool {
-    match i {
-        CLAUDE => &mut s.hide_claude,
-        CODEX => &mut s.hide_codex,
-        RAM => &mut s.hide_ram,
-        CPU => &mut s.hide_cpu,
-        _ => &mut s.hide_drives,
-    }
 }
 
 /// Section `i` rendered in each of the three styles, at taskbar size, shown or not.
 fn style_frames(i: usize, scale: f32) -> Vec<render::Frame> {
     let h = (48.0 * scale).round() as i32;
     with(|s| {
-        let (look, hidden) = (s.looks[i], *hidden_flag(s, i));
-        *hidden_flag(s, i) = false;
+        let (look, hidden) = (s.looks[i], s.hidden[i]);
+        s.hidden[i] = false;
         let mut out = Vec::new();
         for (rings, ring_text) in [(false, false), (true, false), (true, true)] {
             s.looks[i].rings = rings;
             s.looks[i].ring_text = ring_text;
             let mut frame = None;
-            for (mut m, t) in build_models(s) {
-                if section_of(&m, t) == i {
+            for (mut m, section) in build_models(s) {
+                if section == i {
                     m.last = true;
                     frame = Some(render::render(&m, h, scale));
                 }
@@ -1194,7 +1213,7 @@ fn style_frames(i: usize, scale: f32) -> Vec<render::Frame> {
             out.push(frame.unwrap_or(render::Frame { w: 1, h: 1, px: vec![[0, 0, 0, 0]] }));
         }
         s.looks[i] = look;
-        *hidden_flag(s, i) = hidden;
+        s.hidden[i] = hidden;
         out
     })
 }
@@ -1285,38 +1304,28 @@ fn icon(mark: render::Mark) -> Image {
 
 /// Headroom's mark (assets/logo.svg: three meters under a ceiling), drawn at `size` pixels.
 fn logo(size: u32) -> Image {
-    // Shapes on the 16-unit grid: (x, y, w, h, radius, colour), back to front.
-    const SHAPES: [(f32, f32, f32, f32, f32, [u8; 3]); 7] = [
+    // Rounded rects on the 16-unit grid: (x, y, w, h, radius, colour), back to front.
+    const SHAPES: [(f32, f32, f32, f32, f32, [u8; 3]); 6] = [
         (0.0, 0.0, 16.0, 16.0, 3.5, [0x57, 0x53, 0x4E]), // edge
         (0.5, 0.5, 15.0, 15.0, 3.0, [0x1C, 0x19, 0x17]), // tile
         (3.0, 3.0, 10.0, 1.0, 0.5, [0xFA, 0xFA, 0xF9]),  // ceiling
         (3.0, 9.0, 2.0, 4.0, 0.4, [0xF5, 0x9E, 0x0B]),   // meters
         (7.0, 6.0, 2.0, 7.0, 0.4, [0xF5, 0x9E, 0x0B]),
         (11.0, 8.0, 2.0, 5.0, 0.4, [0xF5, 0x9E, 0x0B]),
-        (0.0, 0.0, 0.0, 0.0, 0.0, [0, 0, 0]),
     ];
-    const SS: u32 = 4; // supersampling
-    let k = 16.0 / size as f32;
+    let k = size as f32 / 16.0;
     let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(size, size);
     for (n, d) in buf.make_mut_slice().iter_mut().enumerate() {
-        let (px, py) = ((n as u32 % size) as f32, (n as u32 / size) as f32);
-        let mut acc = [0.0f32; 4]; // premultiplied
-        for sy in 0..SS {
-            for sx in 0..SS {
-                let (x, y) = ((px + (sx as f32 + 0.5) / SS as f32) * k, (py + (sy as f32 + 0.5) / SS as f32) * k);
-                let mut c = [0.0f32; 4];
-                for &(l, t, w, h, rad, rgb) in SHAPES.iter().filter(|s| s.2 > 0.0) {
-                    let (cx, cy) = (x.clamp(l + rad, l + w - rad), y.clamp(t + rad, t + h - rad));
-                    if (x - cx).powi(2) + (y - cy).powi(2) <= rad * rad && x >= l && x <= l + w && y >= t && y <= t + h {
-                        c = [rgb[0] as f32, rgb[1] as f32, rgb[2] as f32, 255.0];
-                    }
-                }
-                acc.iter_mut().zip(c).for_each(|(a, v)| *a += v);
+        let (x, y) = ((n as u32 % size) as f32 + 0.5, (n as u32 / size) as f32 + 0.5);
+        let mut c = [0f32; 4]; // premultiplied
+        for &(l, t, w, h, rad, rgb) in &SHAPES {
+            let a = render::rounded_rect_cov(x, y, l * k, t * k, (l + w) * k, (t + h) * k, rad * k);
+            for (ch, v) in c.iter_mut().zip([rgb[0] as f32, rgb[1] as f32, rgb[2] as f32, 255.0]) {
+                *ch = v * a + *ch * (1.0 - a);
             }
         }
-        let q = |v: f32| (v / (SS * SS) as f32).round() as u8;
-        let a = acc[3] / 255.0 / (SS * SS) as f32;
-        *d = Rgba8Pixel { r: q(acc[0] * a), g: q(acc[1] * a), b: q(acc[2] * a), a: q(acc[3]) };
+        let q = |v: f32| v.round().clamp(0.0, 255.0) as u8;
+        *d = Rgba8Pixel { r: q(c[0]), g: q(c[1]), b: q(c[2]), a: q(c[3]) };
     }
     Image::from_rgba8_premultiplied(buf)
 }

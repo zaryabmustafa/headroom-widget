@@ -32,6 +32,8 @@ use windows_sys::core::w;
 const WM_APP_RESULT: u32 = WM_APP + 1;
 /// Sent by the settings window after it changes a setting.
 const WM_APP_RELOAD: u32 = WM_APP + 2;
+/// A drive sample finished on its worker thread; lParam is a Box<Vec<Drive>>.
+const WM_APP_DRIVES: u32 = WM_APP + 3;
 const T_LAYOUT: usize = 1; // keeps the widget attached and positioned
 const T_ROLL: usize = 5; // animation frames while numbers roll
 /// How long a changed number rolls.
@@ -134,8 +136,8 @@ struct RenderKey {
     /// Rounded memory and CPU use.
     ram: Option<i64>,
     cpu: Option<i64>,
-    /// Internal drives: letter index and rounded % used.
-    drives: Vec<(u8, i64)>,
+    /// Shown drives as drawn: see drive_key.
+    drives: Vec<DriveKey>,
     /// The 5-hour group hides itself for plans without one (Claude, Codex).
     hide_five: [bool; 2],
     /// Bumped whenever settings are (re)loaded.
@@ -147,14 +149,6 @@ struct RenderKey {
 enum Provider {
     Claude,
     Codex,
-}
-
-/// What clicking a section opens.
-#[derive(Clone, Copy)]
-enum Target {
-    Usage(Provider),
-    TaskManager,
-    ThisPc,
 }
 
 impl Provider {
@@ -244,11 +238,8 @@ struct State {
     codex_hide_five: bool,
     codex_hide_week: bool,
     /// Whole sections turned off.
-    hide_claude: bool,
-    hide_codex: bool,
-    hide_ram: bool,
-    hide_cpu: bool,
-    hide_drives: bool,
+    /// By section index (CLAUDE ... DRIVES).
+    hidden: [bool; 5],
     /// Drives show their size (used, or free with "remaining") instead of a percentage.
     drive_size: bool,
     /// Drives turned off one by one: bit n is drive letter A + n.
@@ -261,8 +252,8 @@ struct State {
     cpu: Option<f64>,
     cpu_prev: (u64, u64),
     /// Each section's far edge in widget pixels (right, or bottom on a vertical taskbar),
-    /// and what clicking it opens.
-    sections: Vec<(i32, Target)>,
+    /// and which section it is (CLAUDE ... DRIVES), for clicks.
+    sections: Vec<(i32, usize)>,
     /// Accounts stacked in each column of the widget.
     rows_per_col: u32,
 }
@@ -273,7 +264,7 @@ thread_local! {
         taskbar_created_msg: 0, accounts: Vec::new(), next_id: 0,
         hover: false, dark: false, rendered: None, pos: (0, 0, 0, 0),
         interval: DEFAULT_INTERVAL, looks: [PLAIN; 5], settings_gen: 0,
-        font_size: DEFAULT_FONT_SIZE, icon_size: DEFAULT_ICON_SIZE, on_left: false, pixel_icon: false, roll: false, hide_five: false, codex_hide_five: false, codex_hide_week: false, hide_week: false, hide_fable: false, hide_claude: false, hide_codex: false, hide_ram: false, hide_cpu: false, hide_drives: false, drive_size: false, hidden_drives: 0, drives: Vec::new(), ram: None, rows_per_col: DEFAULT_PER_COL,
+        font_size: DEFAULT_FONT_SIZE, icon_size: DEFAULT_ICON_SIZE, on_left: false, pixel_icon: false, roll: false, hide_five: false, codex_hide_five: false, codex_hide_week: false, hide_week: false, hide_fable: false, hidden: [false; 5], drive_size: false, hidden_drives: 0, drives: Vec::new(), ram: None, rows_per_col: DEFAULT_PER_COL,
         cpu: None, cpu_prev: (0, 0), sections: Vec::new(),
     }) };
 }
@@ -339,7 +330,7 @@ fn main() {
             }
         });
         sample_ram();
-        sample_drives();
+        start_drive_sample(ctl);
         ensure_widget();
         SetTimer(ctl, T_LAYOUT, 1000, None);
         SetTimer(ctl, T_TICK, 30_000, None);
@@ -415,11 +406,9 @@ pub(crate) fn load_settings(s: &mut State) {
     s.hide_fable = on("HideFable");
     s.codex_hide_five = on("CodexHideFiveHour");
     s.codex_hide_week = on("CodexHideWeekly");
-    s.hide_claude = on("HideClaude");
-    s.hide_codex = on("HideCodex");
-    s.hide_ram = on("HideRam");
-    s.hide_cpu = on("HideCpu");
-    s.hide_drives = on("HideDrives");
+    for (hidden, key) in s.hidden.iter_mut().zip(SECTION_HIDE_KEYS) {
+        *hidden = on(key);
+    }
     s.hidden_drives = setting("HiddenDrives");
     s.drive_size = on("DrivesSize");
     s.settings_gen = s.settings_gen.wrapping_add(1);
@@ -433,16 +422,15 @@ fn reload_settings() {
         old != s.interval
     });
     ensure_widget();
-    update_tooltip();
+    // Not while it's open: swapping a visible tooltip's text collapses it.
+    if unsafe { IsWindowVisible(with(|s| s.tip)) } == 0 {
+        update_tooltip();
+    }
     // A new pace applies right away: fetch now, then keep it. Accounts that are
     // mid-fetch pick it up when they finish.
     if interval_changed {
         start_fetch_all();
     }
-}
-
-fn section_hidden(s: &State, i: usize) -> bool {
-    [s.hide_claude, s.hide_codex, s.hide_ram, s.hide_cpu, s.hide_drives][i]
 }
 
 // ---------- data ----------
@@ -540,9 +528,49 @@ pub(crate) fn sample_ram() -> bool {
     })
 }
 
-/// Reads used and total space of every internal (fixed) drive. Returns whether a
-/// rounded percentage, or the set of drives, changed.
+/// A drive: letter index (A = 0), bytes used, bytes total.
+type Drive = (u8, u64, u64);
+/// What the widget draws for a drive: letter, rounded % used, size used, size free.
+type DriveKey = (u8, i64, String, String);
+
+fn drive_key(drives: &[Drive]) -> Vec<DriveKey> {
+    drives
+        .iter()
+        .map(|&(n, used, total)| (n, (used as f64 * 100.0 / total as f64).round() as i64, size_text(used), size_text(total - used)))
+        .collect()
+}
+
+/// Reads drives now, on this thread (the settings window). Returns whether anything shown changed.
 pub(crate) fn sample_drives() -> bool {
+    store_drives(read_drives())
+}
+
+fn store_drives(drives: Vec<Drive>) -> bool {
+    with(|s| {
+        let changed = drive_key(&s.drives) != drive_key(&drives);
+        s.drives = drives;
+        changed
+    })
+}
+
+/// Reads drives on a worker thread and posts them to `ctl`: a sleeping USB disk can
+/// take seconds to answer, and this thread owns a window inside the taskbar.
+fn start_drive_sample(ctl: HWND) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static BUSY: AtomicBool = AtomicBool::new(false);
+    if BUSY.swap(true, Ordering::AcqRel) {
+        return; // the last one hasn't come back yet
+    }
+    let ctl = ctl as isize;
+    std::thread::spawn(move || {
+        let drives = Box::new(read_drives());
+        BUSY.store(false, Ordering::Release);
+        unsafe { PostMessageW(ctl as HWND, WM_APP_DRIVES, 0, Box::into_raw(drives) as LPARAM) };
+    });
+}
+
+/// Used and total space of every internal (fixed) drive.
+fn read_drives() -> Vec<Drive> {
     use windows_sys::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives};
     let mask = unsafe { GetLogicalDrives() };
     let mut drives = Vec::new();
@@ -560,12 +588,7 @@ pub(crate) fn sample_drives() -> bool {
             drives.push((n, total.saturating_sub(free), total));
         }
     }
-    let key = |d: &[(u8, u64, u64)]| d.iter().map(|&(n, u, t)| (n, (u as f64 * 100.0 / t as f64).round() as i64)).collect::<Vec<_>>();
-    with(|s| {
-        let changed = key(&s.drives) != key(&drives);
-        s.drives = drives;
-        changed
-    })
+    drives
 }
 
 /// A drive size the way Explorer writes it: binary units, three significant digits
@@ -753,16 +776,17 @@ fn render_key(s: &State, h: i32, vertical: bool, dpi: u32) -> RenderKey {
                 (a.kind as u8, pct(r.five), pct(r.week), pct(r.fable), r.stale, r.roll.map(|(_, t)| (t * 1000.0) as u32))
             })
             .collect(),
-        ram: pct(s.ram.map(|r| r.0)),
-        cpu: pct(s.cpu),
-        drives: s.drives.iter().map(|&(n, used, total)| (n, (used as f64 * 100.0 / total as f64).round() as i64)).collect(),
+        // Hidden sections can't change the picture.
+        ram: pct(s.ram.map(|r| r.0).filter(|_| !s.hidden[RAM])),
+        cpu: pct(s.cpu.filter(|_| !s.hidden[CPU])),
+        drives: if s.hidden[DRIVES] { Vec::new() } else { drive_key(&s.drives) },
         hide_five: [hide_five_for(s, Provider::Claude), hide_five_for(s, Provider::Codex)],
         settings: s.settings_gen,
     }
 }
 
-/// Each shown section's model, left to right, and what clicking it opens.
-pub(crate) fn build_models(s: &State) -> Vec<(render::Model, Target)> {
+/// Each shown section's model, left to right, and which section it is.
+pub(crate) fn build_models(s: &State) -> Vec<(render::Model, usize)> {
     let model = |look: Look, rows: Vec<render::Row>, mark: render::Mark, labels: [&'static str; 3], hide: [bool; 3], fixed: bool| {
         render::Model {
             rows,
@@ -791,26 +815,26 @@ pub(crate) fn build_models(s: &State) -> Vec<(render::Model, Target)> {
     let claude_hide = [hide_five_for(s, Provider::Claude), s.hide_week, s.hide_fable];
     let mut models = Vec::new();
     let claude_rows = rows_of(Provider::Claude);
-    if !claude_rows.is_empty() && !s.hide_claude {
-        models.push((model(s.looks[CLAUDE], claude_rows, claude_mark, usage_labels, claude_hide, false), Target::Usage(Provider::Claude)));
+    if !claude_rows.is_empty() && !s.hidden[CLAUDE] {
+        models.push((model(s.looks[CLAUDE], claude_rows, claude_mark, usage_labels, claude_hide, false), CLAUDE));
     }
     let codex_rows = rows_of(Provider::Codex);
-    if !codex_rows.is_empty() && !s.hide_codex {
+    if !codex_rows.is_empty() && !s.hidden[CODEX] {
         let hide = [hide_five_for(s, Provider::Codex), s.codex_hide_week, true];
-        models.push((model(s.looks[CODEX], codex_rows, render::Mark::Codex, usage_labels, hide, false), Target::Usage(Provider::Codex)));
+        models.push((model(s.looks[CODEX], codex_rows, render::Mark::Codex, usage_labels, hide, false), CODEX));
     }
     // RAM and CPU: one fixed-width number each. The icon stands in for the label.
-    let ram = if s.hide_ram { None } else { s.ram.map(|r| r.0) };
-    let cpu = if s.hide_cpu { None } else { s.cpu };
+    let ram = if s.hidden[RAM] { None } else { s.ram.map(|r| r.0) };
+    let cpu = if s.hidden[CPU] { None } else { s.cpu };
     for (i, v, mark, label) in [(RAM, ram, render::Mark::Ram, "RAM"), (CPU, cpu, render::Mark::Cpu, "CPU")] {
         let Some(p) = v else { continue };
         let look = s.looks[i];
         let row = render::Row { five: Some(p), week: None, fable: None, roll: None, stale: false };
         let labels = if look.hide_icon { [label, "", ""] } else { ["", "", ""] };
         let m = model(look, vec![row], mark, labels, [false, true, true], true);
-        models.push((render::Model { hide_labels: !look.hide_icon, ..m }, Target::TaskManager));
+        models.push((render::Model { hide_labels: !look.hide_icon, ..m }, i));
     }
-    let drives = shown_drives(&s.drives, s.hide_drives, s.hidden_drives);
+    let drives = shown_drives(&s.drives, s.hidden[DRIVES], s.hidden_drives);
     if !drives.is_empty() {
         // One group per drive, labelled by its letter (always: the numbers need it).
         // "Remaining" shows free space.
@@ -828,11 +852,11 @@ pub(crate) fn build_models(s: &State) -> Vec<(render::Model, Target)> {
             };
             [size(0), size(1), size(2)]
         });
-        models.push((render::Model { hide_labels: false, texts, ..m }, Target::ThisPc));
+        models.push((render::Model { hide_labels: false, texts, ..m }, DRIVES));
     }
     if models.is_empty() {
         // Something to right-click.
-        models.push((model(s.looks[CLAUDE], Vec::new(), claude_mark, usage_labels, claude_hide, false), Target::Usage(Provider::Claude)));
+        models.push((model(s.looks[CLAUDE], Vec::new(), claude_mark, usage_labels, claude_hide, false), CLAUDE));
     }
     if let Some((m, _)) = models.last_mut() {
         m.last = true;
@@ -930,7 +954,7 @@ fn tooltip_text(s: &State) -> String {
     // Claude accounts first, then Codex; each in the order they were added.
     let mut accounts: Vec<&Account> = s.accounts.iter().collect();
     accounts.sort_by_key(|a| a.kind as u8);
-    for a in accounts.into_iter().filter(|a| !(a.kind == Provider::Codex && s.hide_codex || a.kind == Provider::Claude && s.hide_claude)) {
+    for a in accounts.into_iter().filter(|a| !(a.kind == Provider::Codex && s.hidden[CODEX] || a.kind == Provider::Claude && s.hidden[CLAUDE])) {
         if prev.is_some() && prev != Some(a.kind) {
             lines.push(String::new());
         }
@@ -963,18 +987,18 @@ fn tooltip_text(s: &State) -> String {
         }
     }
     let mut system = Vec::new();
-    if let (false, Some((_, used, total))) = (s.hide_ram, s.ram) {
+    if let (false, Some((_, used, total))) = (s.hidden[RAM], s.ram) {
         let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
         system.push(format!("RAM {:.1} / {:.1} GB", gb(used), gb(total)));
     }
-    if let (false, Some(cpu)) = (s.hide_cpu, s.cpu) {
+    if let (false, Some(cpu)) = (s.hidden[CPU], s.cpu) {
         system.push(format!("CPU {}%", cpu.round() as i64));
     }
     if !system.is_empty() {
         lines.push(String::new());
         lines.push(system.join(" · "));
     }
-    if !s.hide_drives && !s.drives.is_empty() {
+    if !s.hidden[DRIVES] && !s.drives.is_empty() {
         // Every internal drive, including ones turned off or past the section's room.
         lines.push(String::new());
         for &(n, used, total) in &s.drives {
@@ -1329,13 +1353,13 @@ thread_local! {
 /// Whether a setting's menu item is ticked, or None for items that are not settings.
 fn setting_checked(id: usize) -> Option<bool> {
     let i = id.checked_sub(ID_SHOW_BASE).filter(|i| *i < SECTIONS.len())?;
-    Some(with(|s| !section_hidden(s, i)))
+    Some(with(|s| !s.hidden[i]))
 }
 
 /// Applies a setting picked in the menu. Returns false for other items.
 fn apply_setting(id: usize) -> bool {
     let Some(i) = id.checked_sub(ID_SHOW_BASE).filter(|i| *i < SECTIONS.len()) else { return false };
-    let hidden = with(|s| section_hidden(s, i));
+    let hidden = with(|s| s.hidden[i]);
     write_setting(SECTION_HIDE_KEYS[i], !hidden as u32);
     reload_settings();
     true
@@ -1427,14 +1451,7 @@ unsafe extern "system" fn ctl_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                         update_tooltip();
                     }
                 }
-                T_DRIVES => {
-                    if sample_drives() {
-                        ensure_widget();
-                    }
-                    if IsWindowVisible(with(|s| s.tip)) == 0 {
-                        update_tooltip();
-                    }
-                }
+                T_DRIVES => start_drive_sample(hwnd),
                 T_TICK => {
                     update_tooltip();
                     // A window just reset: fetch now instead of waiting.
@@ -1462,6 +1479,16 @@ unsafe extern "system" fn ctl_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 }
                 id if id >= T_FETCH_BASE => start_fetch((id - T_FETCH_BASE) as u32),
                 _ => {}
+            }
+            0
+        }
+        WM_APP_DRIVES => {
+            let drives = Box::from_raw(lp as *mut Vec<Drive>);
+            if store_drives(*drives) {
+                ensure_widget();
+            }
+            if IsWindowVisible(with(|s| s.tip)) == 0 {
+                update_tooltip();
             }
             0
         }
@@ -1529,9 +1556,9 @@ unsafe extern "system" fn widget_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             let (x, y) = ((lp & 0xFFFF) as i16 as i32, ((lp >> 16) & 0xFFFF) as i16 as i32);
             let at = if with(|s| s.rendered.as_ref().is_some_and(|k| k.vertical)) { y } else { x };
             match with(|s| s.sections.iter().find(|(end, _)| at < *end).map(|(_, p)| *p)) {
-                Some(Target::Usage(Provider::Codex)) => open_url(CODEX_USAGE_URL),
-                Some(Target::ThisPc) => open_url("shell:MyComputerFolder"),
-                Some(Target::TaskManager) => {
+                Some(CODEX) => open_url(CODEX_USAGE_URL),
+                Some(DRIVES) => open_url("shell:MyComputerFolder"),
+                Some(RAM | CPU) => {
                     ShellExecuteW(null_mut(), w!("open"), w!("taskmgr.exe"), null(), null(), SW_SHOWNORMAL);
                 }
                 _ => open_usage_page(),

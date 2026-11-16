@@ -58,7 +58,7 @@ see when you're close to a limit before you hit it.
 3. Headroom appears in the taskbar next to the clock.
 
 Prefer no installer? Download `headroom.exe` instead, put it in a folder of your own and
-run it. Right-click the widget and choose **Start with Windows** to launch it at sign-in.
+run it. Right-click the widget, choose **Settings… → General** and turn on **Start with Windows** to launch it at sign-in.
 
 Neither file is code-signed yet, so Windows SmartScreen may warn on first run:
 choose **More info → Run anyway**.
@@ -162,7 +162,7 @@ what the tooltip says and your Windows version.
 **Uninstall**. It closes Headroom and removes the app, its shortcut, the sign-in entry
 and its settings.
 
-**Portable `headroom.exe`:** right-click the widget, untick **Start with Windows**, then
+**Portable `headroom.exe`:** right-click the widget, turn off **Start with Windows** in **Settings… → General**, then
 choose **Exit**. Delete `headroom.exe`, and optionally the `HKCU\Software\Headroom` registry key.
 
 ## Contributing

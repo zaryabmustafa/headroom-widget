@@ -165,12 +165,21 @@ unsafe fn font(px: i32, faces: &'static [&'static str]) -> HFONT {
     f
 }
 
+/// ClearType when Windows smooths fonts (DEFAULT_QUALITY then follows its ClearType or
+/// grey choice); grey antialiasing when smoothing is off, rather than jagged text.
+fn text_quality() -> u32 {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETFONTSMOOTHING};
+    let mut on: i32 = 1;
+    unsafe { SystemParametersInfoW(SPI_GETFONTSMOOTHING, 0, &mut on as *mut i32 as *mut _, 0) };
+    if on != 0 { DEFAULT_QUALITY as u32 } else { ANTIALIASED_QUALITY as u32 }
+}
+
 unsafe fn make_font(px: i32, faces: &[&str]) -> HFONT {
     for (i, face) in faces.iter().enumerate() {
         let f = CreateFontW(
             -px, 0, 0, 0, FW_NORMAL as i32, 0, 0, 0,
             DEFAULT_CHARSET as u32, OUT_TT_PRECIS as u32, CLIP_DEFAULT_PRECIS as u32,
-            DEFAULT_QUALITY as u32, (DEFAULT_PITCH | FF_SWISS) as u32,
+            text_quality(), (DEFAULT_PITCH | FF_SWISS) as u32,
             wide(face).as_ptr(),
         );
         if i + 1 == faces.len() || font_is(f, face) {
@@ -690,7 +699,7 @@ fn layout(m: &Model, h: i32, scale: f32, vertical: bool) -> Frame {
     }
 }
 
-fn rounded_rect_cov(x: f32, y: f32, l: f32, t: f32, r: f32, b: f32, rad: f32) -> f32 {
+pub fn rounded_rect_cov(x: f32, y: f32, l: f32, t: f32, r: f32, b: f32, rad: f32) -> f32 {
     let cx = x.clamp(l + rad, r - rad);
     let cy = y.clamp(t + rad, b - rad);
     let d = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt() - rad;
