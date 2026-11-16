@@ -1565,7 +1565,7 @@ dependencies = [
 
 [[package]]
 name = "headroom"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "embed-resource",
  "serde_json",
