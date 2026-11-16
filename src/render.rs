@@ -65,6 +65,10 @@ pub enum Mark {
     Codex,
     /// A RAM stick.
     Ram,
+    /// A CPU chip.
+    Cpu,
+    /// A hard drive, for disk space.
+    Drive,
 }
 
 /// One account's numbers.
@@ -114,6 +118,8 @@ pub struct Model {
     pub rows_per_col: usize,
     /// Rightmost section: no divider after its last column.
     pub last: bool,
+    /// Values written out in place of percentages (drive sizes), one per group.
+    pub texts: Option<[String; 3]>,
 }
 
 pub struct Frame {
@@ -134,8 +140,9 @@ fn value_text(v: Option<f64>, show_left: bool) -> String {
 
 fn value_color(v: Option<f64>, pal: &Palette) -> Rgba {
     match v {
-        Some(p) if p >= 95.0 => pal.crit,
-        Some(p) if p >= 80.0 => pal.warn,
+        // Claude Code's thresholds: warning above 75 %, critical above 95 %.
+        Some(p) if p > 95.0 => pal.crit,
+        Some(p) if p > 75.0 => pal.warn,
         _ => pal.value,
     }
 }
@@ -158,12 +165,21 @@ unsafe fn font(px: i32, faces: &'static [&'static str]) -> HFONT {
     f
 }
 
+/// ClearType when Windows smooths fonts (DEFAULT_QUALITY then follows its ClearType or
+/// grey choice); grey antialiasing when smoothing is off, rather than jagged text.
+fn text_quality() -> u32 {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETFONTSMOOTHING};
+    let mut on: i32 = 1;
+    unsafe { SystemParametersInfoW(SPI_GETFONTSMOOTHING, 0, &mut on as *mut i32 as *mut _, 0) };
+    if on != 0 { DEFAULT_QUALITY as u32 } else { ANTIALIASED_QUALITY as u32 }
+}
+
 unsafe fn make_font(px: i32, faces: &[&str]) -> HFONT {
     for (i, face) in faces.iter().enumerate() {
         let f = CreateFontW(
             -px, 0, 0, 0, FW_NORMAL as i32, 0, 0, 0,
             DEFAULT_CHARSET as u32, OUT_TT_PRECIS as u32, CLIP_DEFAULT_PRECIS as u32,
-            ANTIALIASED_QUALITY as u32, (DEFAULT_PITCH | FF_SWISS) as u32,
+            text_quality(), (DEFAULT_PITCH | FF_SWISS) as u32,
             wide(face).as_ptr(),
         );
         if i + 1 == faces.len() || font_is(f, face) {
@@ -212,20 +228,44 @@ struct Ring {
 }
 
 struct Divider {
-    x: i32,
+    x0: i32,
+    x1: i32,
     y0: i32,
     y1: i32,
 }
 
-/// Renders the widget for a taskbar of height `h` at `scale` (DPI / 96).
+/// Renders a section for a taskbar of height `h` at `scale` (DPI / 96).
 pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
+    layout(m, h, scale, false)
+}
+
+/// Renders sections for a vertical taskbar `avail` pixels wide: in each, the mark
+/// on its own line, then one line per limit. All shrink by the same amount until
+/// the widest fits, so text stays one size.
+pub fn render_vertical(ms: &[&Model], scale: f32, avail: i32) -> Vec<Frame> {
+    let mut k = 1.0;
+    loop {
+        let fs: Vec<Frame> = ms.iter().map(|m| layout(m, 0, scale * k, true)).collect();
+        let widest = fs.iter().map(|f| f.w).max().unwrap_or(0);
+        if widest <= avail || k < 0.4 {
+            return fs;
+        }
+        k *= avail as f32 / widest as f32 * 0.97;
+    }
+}
+
+/// `vertical`: `h` is unused and the height follows the content.
+fn layout(m: &Model, h: i32, scale: f32, vertical: bool) -> Frame {
     let pal = palette(m.dark);
     let show_left = m.show_left && !m.fixed;
     let s = |v: f32| (v * scale).round() as i32;
+    // Vertical lines are sized as on a 32 px tall taskbar.
+    let mut h = if vertical { s(32.0) } else { h };
     let empty = [Row { five: None, week: None, fable: None, roll: None, stale: false }];
     let rows: &[Row] = if m.rows.is_empty() { &empty } else { &m.rows };
-    let rows_per_col = m.rows_per_col.clamp(1, MAX_ROWS_PER_COLUMN);
-    let per_col = rows.len().min(rows_per_col);
+    // Vertical: every account in one column, one line per limit.
+    let rows_per_col = if vertical { rows.len() } else { m.rows_per_col.clamp(1, MAX_ROWS_PER_COLUMN) };
+    let per_col = if vertical { 1 } else { rows.len().min(rows_per_col) };
     // One account uses the full height like before; stacked accounts share
     // it, with a small margin, and the text shrinks to fit.
     let (band_top, row_h) = if per_col == 1 {
@@ -252,9 +292,9 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
         // Ring diameter: big enough for the number inside, or about text height beside it.
         let ring_d = if !m.rings { 0 } else { (row_h as i32 - s(2.0)).clamp(1, s(if inside { 34.0 } else { 16.0 })) };
         let ring_gap = if m.rings && !inside { s(5.0) } else { 0 };
-        let small_px = ((ring_d as f32 * 0.28).round() as i32).max(1);
+        let mut small_px = ((ring_d as f32 * 0.32).round() as i32).max(1);
         const SEMIBOLD: &[&str] = &["Segoe UI Variable Text Semibold", "Segoe UI Semibold"];
-        let f_small = font(small_px, SEMIBOLD);
+        let mut f_small = font(small_px, SEMIBOLD);
         let f_label = font(font_px, &["Segoe UI Variable Text", "Segoe UI"]);
         let f_value = font(font_px, SEMIBOLD);
 
@@ -265,6 +305,32 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
             GetTextExtentPoint32W(dc, t.as_ptr(), t.len() as i32, &mut sz);
             sz.cx
         };
+        // Blank space before the first glyph and after the last one.
+        let bearings = |t: &[u16], f: HFONT| -> (i32, i32) {
+            SelectObject(dc, f);
+            let abc = |c: u16| {
+                let mut a = std::mem::zeroed::<ABC>();
+                GetCharABCWidthsW(dc, c as u32, c as u32, &mut a);
+                a
+            };
+            match (t.first(), t.last()) {
+                (Some(&a), Some(&b)) => (abc(a).abcA, abc(b).abcC),
+                _ => (0, 0),
+            }
+        };
+        if inside {
+            // The widest number, "100%", fills the ring's inner width less a 2 px margin.
+            let room = (ring_d as f32 - 2.0 * (ring_d as f32 * 0.1).max(1.5) - 2.0 * s(2.0) as f32).max(1.0);
+            let widest = std::iter::once("100%")
+                .chain(m.texts.iter().flat_map(|t| t.iter().map(|s| s.as_str())))
+                .map(|t| measure(&t.encode_utf16().collect::<Vec<u16>>(), f_small))
+                .max()
+                .unwrap_or(0) as f32;
+            if widest > 0.0 && (widest - room).abs() >= 0.5 {
+                small_px = ((small_px as f32 * room / widest).floor() as i32).max(1);
+                f_small = font(small_px, SEMIBOLD);
+            }
+        }
 
         let dim = |stale: bool, c: Rgba| if stale { Rgba(c.0, c.1, c.2, c.3 * 0.5) } else { c };
         let all_stale = rows.iter().all(|r| r.stale);
@@ -280,8 +346,15 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
         let div_h = if per_col == 1 { s(20.0) } else { (row_h as i32 - s(2.0)).max(1) };
 
         let mut x = pad_l;
-        let icon_x = x;
-        x += icon + gap_icon;
+        let mut icon_x = x;
+        let pad_v = s(6.0);
+        // Vertical: the mark gets a line of its own, then each limit one line.
+        let mut y = pad_v + if icon > 0 { icon + pad_v } else { 0 };
+        let line_h = ((font_px as f32 * 1.6).round() as i32).max(ring_d + s(4.0));
+        let mut hlines = Vec::new();
+        if !vertical {
+            x += icon + gap_icon;
+        }
         let mut segs = Vec::new();
         let mut dividers = Vec::new();
         let mut rings = Vec::new();
@@ -297,14 +370,18 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
                 .filter_map(|(k, on)| on.then_some(k))
                 .collect();
             let groups = ids.len();
-            let label_w: Vec<i32> = ids
+            let mut label_w: Vec<i32> = ids
                 .iter()
                 .map(|&k| &labels[k])
                 .map(|l| if m.hide_labels { 0 } else { measure(l, f_label) })
                 .collect();
             let values: Vec<Vec<Vec<u16>>> = col
                 .iter()
-                .map(|r| ids.iter().map(|&k| enc(&value_text([r.five, r.week, r.fable][k], show_left))).collect())
+                .map(|r| {
+                    ids.iter()
+                        .map(|&k| enc(&m.texts.as_ref().map_or_else(|| value_text([r.five, r.week, r.fable][k], show_left), |t| t[k].clone())))
+                        .collect()
+                })
                 .collect();
             let mut value_w = vec![0; groups];
             for v in &values {
@@ -312,12 +389,19 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
                     value_w[g] = value_w[g].max(measure(&v[g], if inside { f_small } else { f_value }));
                 }
             }
-            let mut group_x = vec![0; groups];
+            let mut group_x = vec![pad_l; groups];
             let mut div_x = vec![0; groups];
             // Groups inside a section are spaced, not divided; one divider ends the section,
-            // except after the rightmost one.
-            let end_div = !(m.last && ci + 1 == columns.len());
-            for g in 0..groups {
+            // except after the rightmost one. Vertical sections are divided by compose().
+            let end_div = !vertical && !(m.last && ci + 1 == columns.len());
+            if vertical {
+                // Labels share the widest label's width so the values line up.
+                let lw = label_w.iter().copied().max().unwrap_or(0);
+                label_w.iter_mut().for_each(|l| *l = lw);
+                let vw = value_w.iter().copied().max().unwrap_or(0);
+                x = pad_l + lw + gap_lv + if inside { ring_d } else { ring_d + ring_gap + vw };
+            }
+            for g in (0..groups).filter(|_| !vertical) {
                 group_x[g] = x;
                 x += label_w[g] + gap_lv + if inside { ring_d } else { ring_d + ring_gap + value_w[g] };
                 if g + 1 < groups {
@@ -340,13 +424,19 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
                     None => (1.0, 0.0),
                 };
                 for g in 0..groups {
+                    let (y0, y1) = if vertical {
+                        y += line_h;
+                        (y - line_h, y)
+                    } else {
+                        (y0, y1)
+                    };
                     let val = [row.five, row.week, row.fable][ids[g]];
                     if !m.hide_labels {
                         segs.push(Seg { text: labels[ids[g]].clone(), bold: false, small: false, x: group_x[g], w: label_w[g], y0, y1, color: pal.label, blur: 0, slack: s(2.0) });
                     }
                     if g + 1 == groups && end_div {
                         let dy = y0 + ((y1 - y0) - div_h) / 2;
-                        dividers.push(Divider { x: div_x[g], y0: dy.max(0), y1: (dy + div_h).min(h) });
+                        dividers.push(Divider { x0: div_x[g], x1: div_x[g] + div_w, y0: dy.max(0), y1: (dy + div_h).min(h) });
                     }
                     let content_x = group_x[g] + label_w[g] + gap_lv;
                     let color = value_color(val, &pal);
@@ -365,7 +455,15 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
                         });
                     }
                     let vf = if inside { f_small } else { f_value };
-                    let text_x = |tw: i32| if inside { content_x + (ring_d - tw) / 2 } else { content_x + ring_d + ring_gap };
+                    // Inside a ring, center the ink, not the advance box.
+                    let text_x = |t: &[u16]| {
+                        if inside {
+                            let (a, c) = bearings(t, vf);
+                            content_x + (ring_d - (measure(t, vf) - a - c)) / 2 - a
+                        } else {
+                            content_x + ring_d + ring_gap
+                        }
+                    };
                     let color = dim(row.stale, color);
                     let old = row
                         .roll
@@ -373,7 +471,7 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
                         .filter(|o| *o != vals[g]);
                     let Some(old) = old else {
                         let vw = measure(&vals[g], vf);
-                        segs.push(Seg { text: vals[g].clone(), bold: true, small: inside, x: text_x(vw), w: vw, y0, y1, color, blur: 0, slack: s(2.0) });
+                        segs.push(Seg { text: vals[g].clone(), bold: true, small: inside, x: text_x(&vals[g]), w: vw, y0, y1, color, blur: 0, slack: s(2.0) });
                         continue;
                     };
                     // Rolling: each changed character's old glyph leaves upward while the new
@@ -384,7 +482,7 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
                     let moved = (p * line as f32).round() as i32;
                     let blur = (speed * line as f32 * 0.048).round() as i32;
                     for (text, other, is_new) in [(&old, &vals[g], false), (&vals[g], &old, true)] {
-                        let base = text_x(measure(text, vf));
+                        let base = text_x(text);
                         for i in 0..text.len() {
                             let changed = other.get(i) != Some(&text[i]);
                             if !changed && !is_new {
@@ -411,12 +509,24 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
                         }
                     }
                 }
+                if vertical && ri + 1 < col.len() {
+                    // A rule between accounts.
+                    hlines.push(y + gap_div / 2);
+                    y += gap_div;
+                }
             }
             if ci + 1 < columns.len() {
                 x += gap_div;
             }
         }
-        let w = x + pad_r;
+        let w = if vertical { x + pad_l } else { x + pad_r };
+        if vertical {
+            h = y + pad_v;
+            icon_x = (w - icon) / 2;
+            for &hy in &hlines {
+                dividers.push(Divider { x0: pad_l, x1: w - pad_l, y0: hy, y1: hy + div_w });
+            }
+        }
 
         // Text mask: white text on black.
         let bmi = BITMAPINFO {
@@ -444,9 +554,19 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
         }
         GdiFlush();
         let n = (w * h) as usize;
-        let mask: Vec<u8> = std::slice::from_raw_parts(bits as *const [u8; 4], n)
+        // ClearType coverage per subpixel, as R, G, B (the DIB is BGRA). On a light
+        // taskbar it is averaged to gray: one alpha can't carry per-channel coverage,
+        // and the error that leaves shows on light backgrounds only.
+        let mask: Vec<[u8; 3]> = std::slice::from_raw_parts(bits as *const [u8; 4], n)
             .iter()
-            .map(|p| p[0].max(p[1]).max(p[2]))
+            .map(|p| {
+                if m.dark {
+                    [p[2], p[1], p[0]]
+                } else {
+                    let g = ((p[0] as u32 + p[1] as u32 + p[2] as u32) / 3) as u8;
+                    [g, g, g]
+                }
+            })
             .collect();
         SelectObject(dc, old_bmp);
         DeleteObject(bmp);
@@ -482,7 +602,7 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
         // Dividers.
         for d in &dividers {
             for y in d.y0..d.y1 {
-                for xx in d.x..d.x + div_w {
+                for xx in d.x0..d.x1 {
                     over(&mut buf, (y * w + xx) as usize, pal.divider, 1.0);
                 }
             }
@@ -517,13 +637,15 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
         }
 
         // Section mark.
-        let iy = (h - icon) / 2;
+        let iy = if vertical { pad_v } else { (h - icon) / 2 };
         let (mark, mark_color) = match m.mark {
             Mark::None => (Vec::new(), pal.value),
             Mark::Claude => (draw_mark(icon), CLAUDE_ORANGE),
             Mark::Pixel => (draw_pixel_mark(icon), CLAUDE_ORANGE),
             Mark::Codex => (draw_mask(CODEX_MASK, icon, 0.8), pal.value),
             Mark::Ram => (draw_mask(RAM_MASK, icon, 0.95), pal.value),
+            Mark::Cpu => (draw_mask(CPU_MASK, icon, 0.95), pal.value),
+            Mark::Drive => (draw_mask(DRIVE_MASK, icon, 0.95), pal.value),
         };
         if !mark.is_empty() {
             for y in 0..icon {
@@ -540,13 +662,22 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
                 for xx in seg.x.max(0)..(seg.x + seg.w + seg.slack).min(w) {
                     let i = (y * w + xx) as usize;
                     // Motion blur: a vertical box average kept inside the glyph's own line box.
-                    let sum: u32 = (y - seg.blur..=y + seg.blur)
-                        .filter(|yy| (seg.y0.max(0)..seg.y1.min(h)).contains(yy))
-                        .map(|yy| mask[(yy * w + xx) as usize] as u32)
-                        .sum();
-                    let cov = sum as f32 / (255.0 * (2 * seg.blur + 1) as f32);
-                    if cov > 0.0 {
-                        over(&mut buf, i, seg.color, cov);
+                    let mut sum = [0u32; 3];
+                    for yy in (y - seg.blur..=y + seg.blur).filter(|yy| (seg.y0.max(0)..seg.y1.min(h)).contains(yy)) {
+                        let mk = mask[(yy * w + xx) as usize];
+                        (0..3).for_each(|c| sum[c] += mk[c] as u32);
+                    }
+                    let cov = sum.map(|v| v as f32 / (255.0 * (2 * seg.blur + 1) as f32));
+                    if cov.iter().any(|&c| c > 0.0) {
+                        // Per-channel "over" in premultiplied BGRA; alpha takes the strongest channel.
+                        let c = seg.color;
+                        let a = cov.map(|v| c.3 * v);
+                        let d = &mut buf[i];
+                        d[0] = c.2 * a[2] + d[0] * (1.0 - a[2]);
+                        d[1] = c.1 * a[1] + d[1] * (1.0 - a[1]);
+                        d[2] = c.0 * a[0] + d[2] * (1.0 - a[0]);
+                        let am = a[0].max(a[1]).max(a[2]);
+                        d[3] = am + d[3] * (1.0 - am);
                     }
                 }
             }
@@ -568,7 +699,7 @@ pub fn render(m: &Model, h: i32, scale: f32) -> Frame {
     }
 }
 
-fn rounded_rect_cov(x: f32, y: f32, l: f32, t: f32, r: f32, b: f32, rad: f32) -> f32 {
+pub fn rounded_rect_cov(x: f32, y: f32, l: f32, t: f32, r: f32, b: f32, rad: f32) -> f32 {
     let cx = x.clamp(l + rad, r - rad);
     let cy = y.clamp(t + rad, b - rad);
     let d = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt() - rad;
@@ -650,15 +781,26 @@ fn draw_mark(size: i32) -> Vec<f32> {
     out
 }
 
-/// Lays sections out left to right in one frame, with the hover pill
-/// (if any) under all of them.
-pub fn compose(frames: &[Frame], h: i32, scale: f32, dark: bool, hover: bool) -> Frame {
-    let w: i32 = frames.iter().map(|f| f.w).sum::<i32>().max(1);
+/// Lays sections out left to right in one frame (top to bottom, centered and
+/// divided by rules, when `vertical`), with the hover pill (if any) under all of
+/// them. Also returns each section's far edge (right, or bottom when vertical).
+pub fn compose(frames: &[Frame], h: i32, scale: f32, dark: bool, hover: bool, vertical: bool) -> (Frame, Vec<i32>) {
+    let pal = palette(dark);
+    let s = |v: f32| (v * scale).round() as i32;
+    let rule = s(9.0); // vertical: space between sections, with a 1 px rule in its middle
+    let (w, h) = if vertical {
+        let w = frames.iter().map(|f| f.w).max().unwrap_or(1).max(1);
+        (w, (frames.iter().map(|f| f.h).sum::<i32>() + rule * (frames.len() as i32 - 1).max(0)).max(1))
+    } else {
+        (frames.iter().map(|f| f.w).sum::<i32>().max(1), h)
+    };
     let n = (w * h) as usize;
     let mut buf = vec![[0f32; 4]; n];
-    let mut x0 = 0;
-    for f in frames {
-        for y in 0..h.min(f.h) {
+    let mut ends = Vec::new();
+    let mut at = 0;
+    for (fi, f) in frames.iter().enumerate() {
+        let (x0, y0) = if vertical { ((w - f.w) / 2, at) } else { (at, 0) };
+        for y in 0..f.h.min(h - y0) {
             for x in 0..f.w {
                 let p = f.px[(y * f.w + x) as usize];
                 // [0, 0, 0, 1] is the "transparent but clickable" filler.
@@ -666,15 +808,21 @@ pub fn compose(frames: &[Frame], h: i32, scale: f32, dark: bool, hover: bool) ->
                     continue;
                 }
                 let k = 1.0 / 255.0;
-                buf[(y * w + x0 + x) as usize] =
+                buf[((y0 + y) * w + x0 + x) as usize] =
                     [p[0] as f32 * k, p[1] as f32 * k, p[2] as f32 * k, p[3] as f32 * k];
             }
         }
-        x0 += f.w;
+        at += if vertical { f.h } else { f.w };
+        if vertical && fi + 1 < frames.len() {
+            let (ry, c) = (at + rule / 2, pal.divider);
+            for x in s(8.0)..w - s(8.0) {
+                buf[(ry * w + x) as usize] = [c.2 * c.3, c.1 * c.3, c.0 * c.3, c.3];
+            }
+            at += rule;
+        }
+        ends.push(at);
     }
     if hover {
-        let pal = palette(dark);
-        let s = |v: f32| (v * scale).round() as i32;
         let (top, bottom, r) = (s(4.0) as f32, (h - s(4.0)) as f32, s(4.0) as f32);
         for y in 0..h {
             for x in 0..w {
@@ -701,14 +849,32 @@ pub fn compose(frames: &[Frame], h: i32, scale: f32, dark: bool, hover: bool) ->
             }
         })
         .collect();
-    Frame { w, h, px }
+    (Frame { w, h, px }, ends)
 }
 
 const MASK_N: i32 = 96;
-/// OpenAI's mark (Simple Icons `openai.svg`) and a RAM stick (Lucide
-/// `memory-stick.svg`, ISC): 96x96 8-bit alpha masks rasterized once.
+/// OpenAI's mark (Simple Icons `openai.svg`), a RAM stick, a CPU and a hard drive
+/// (Lucide `memory-stick`, `cpu`, `hard-drive`, ISC): 96x96 8-bit alpha masks rasterized once.
 const CODEX_MASK: &[u8; (MASK_N * MASK_N) as usize] = include_bytes!("../assets/codex_mark.a8");
 const RAM_MASK: &[u8; (MASK_N * MASK_N) as usize] = include_bytes!("../assets/ram_mark.a8");
+const CPU_MASK: &[u8; (MASK_N * MASK_N) as usize] = include_bytes!("../assets/cpu_mark.a8");
+const DRIVE_MASK: &[u8; (MASK_N * MASK_N) as usize] = include_bytes!("../assets/drive_mark.a8");
+
+const GEAR_MASK: &[u8; (MASK_N * MASK_N) as usize] = include_bytes!("../assets/gear_mark.a8");
+
+/// A section mark alone, as coverage 0 to 1, `size` pixels square (settings window icons).
+/// `None` gives Lucide's `settings` gear.
+pub fn mark_mask(mark: Mark, size: i32) -> Vec<f32> {
+    match mark {
+        Mark::None => draw_mask(GEAR_MASK, size, 0.95),
+        Mark::Claude => draw_mark(size),
+        Mark::Pixel => draw_pixel_mark(size),
+        Mark::Codex => draw_mask(CODEX_MASK, size, 0.8),
+        Mark::Ram => draw_mask(RAM_MASK, size, 0.95),
+        Mark::Cpu => draw_mask(CPU_MASK, size, 0.95),
+        Mark::Drive => draw_mask(DRIVE_MASK, size, 0.95),
+    }
+}
 
 /// Box-filters a mask down to `size`, drawn at `scale` of the box, centered.
 /// Solid marks fill their box while Claude's thin-spoked asterisk doesn't,
@@ -729,4 +895,41 @@ fn draw_mask(mask: &[u8], size: i32, scale: f32) -> Vec<f32> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model(rings: bool, ring_text: bool, mark: Mark) -> Model {
+        let row = |p: f64| Row { five: Some(p), week: Some(100.0), fable: None, roll: None, stale: false };
+        Model {
+            rows: vec![row(42.0), row(88.0)], hover: false, dark: true, show_left: false,
+            font_size: DEFAULT_FONT_SIZE, mark, labels: ["5h", "W", "F"], fixed: false, icon_size: 16,
+            rings, ring_text, hide_labels: false, hide_five: false, hide_week: false, hide_fable: true,
+            rows_per_col: 2, last: true, texts: None,
+        }
+    }
+
+    #[test]
+    fn vertical_sections_fit_the_bar() {
+        for (rings, inside) in [(false, false), (true, false), (true, true)] {
+            let f = &render_vertical(&[&model(rings, inside, Mark::Claude)], 1.5, 72)[0];
+            assert!(f.w <= 72 && f.h > 0, "rings {rings} inside {inside}: {}x{}", f.w, f.h);
+            assert_eq!(f.px.len(), (f.w * f.h) as usize);
+        }
+        let frames = render_vertical(&[&model(false, false, Mark::Claude), &model(false, false, Mark::Cpu)], 1.0, 48);
+        let (f, ends) = compose(&frames, 48, 1.0, true, true, true);
+        assert_eq!(f.w, frames.iter().map(|f| f.w).max().unwrap());
+        assert_eq!(*ends.last().unwrap(), f.h);
+        assert!(ends[0] > frames[0].h); // the rule's space belongs to the first section
+    }
+
+    #[test]
+    fn horizontal_layout_unchanged_in_height() {
+        let f = render(&model(true, true, Mark::Claude), 48, 1.0);
+        assert_eq!(f.h, 48);
+        let (c, ends) = compose(&[f], 48, 1.0, true, false, false);
+        assert_eq!((c.h, ends), (48, vec![c.w]));
+    }
 }

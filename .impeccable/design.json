@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-16T00:00:00Z",
+  "title": "Design System: Headroom",
+  "extensions": {
+    "colorMeta": {
+      "amber": { "role": "primary", "displayName": "Ember Amber", "canonical": "#F59E0B", "tonalRamp": ["#78350F", "#92400E", "#B45309", "#D97706", "#F59E0B", "#FBBF24", "#FCD34D", "#FEF3C7"] },
+      "amber-ink": { "role": "primary", "displayName": "Amber Ink", "canonical": "#1C1917", "tonalRamp": ["#0C0A09", "#1C1917", "#292524", "#44403C", "#57534E", "#78716C", "#A8A29E", "#E7E5E4"] },
+      "ground": { "role": "neutral", "displayName": "Charcoal Ground", "canonical": "#1C1917", "tonalRamp": ["#0C0A09", "#1C1917", "#292524", "#44403C", "#57534E", "#78716C", "#A8A29E", "#E7E5E4"] },
+      "deck": { "role": "neutral", "displayName": "Deck Black", "canonical": "#0F0D0C", "tonalRamp": ["#0C0A09", "#0F0D0C", "#1C1917", "#292524", "#44403C", "#57534E", "#A8A29E", "#E7E5E4"] },
+      "raised": { "role": "neutral", "displayName": "Raised Stone", "canonical": "#292524", "tonalRamp": ["#0C0A09", "#1C1917", "#292524", "#332E2B", "#44403C", "#57534E", "#A8A29E", "#E7E5E4"] },
+      "raised-hover": { "role": "neutral", "displayName": "Raised Stone, Lit", "canonical": "#332E2B", "tonalRamp": ["#0C0A09", "#1C1917", "#292524", "#332E2B", "#44403C", "#57534E", "#A8A29E", "#E7E5E4"] },
+      "hair": { "role": "neutral", "displayName": "Hairline", "canonical": "#3A3532", "tonalRamp": ["#0C0A09", "#1C1917", "#292524", "#3A3532", "#44403C", "#57534E", "#A8A29E", "#E7E5E4"] },
+      "edge": { "role": "neutral", "displayName": "Edge", "canonical": "rgb(87, 83, 78)", "tonalRamp": ["#0C0A09", "#1C1917", "#292524", "#44403C", "#57534E", "#78716C", "#A8A29E", "#E7E5E4"] },
+      "text": { "role": "neutral", "displayName": "Ceiling White", "canonical": "#FAFAF9", "tonalRamp": ["#1C1917", "#44403C", "#78716C", "#A8A29E", "#D6D3D1", "#E7E5E4", "#F5F5F4", "#FAFAF9"] },
+      "muted": { "role": "neutral", "displayName": "Ash", "canonical": "#A8A29E", "tonalRamp": ["#1C1917", "#44403C", "#57534E", "#78716C", "#A8A29E", "#D6D3D1", "#E7E5E4", "#FAFAF9"] },
+      "taskbar-dark": { "role": "neutral", "displayName": "Taskbar Dark", "canonical": "#202020", "tonalRamp": ["#0A0A0A", "#141414", "#202020", "#2B2B2B", "#3D3D3D", "#5C5C5C", "#9E9E9E", "#E0E0E0"] },
+      "taskbar-light": { "role": "neutral", "displayName": "Taskbar Light", "canonical": "#EEEEEE", "tonalRamp": ["#202020", "#3D3D3D", "#5C5C5C", "#9E9E9E", "#C8C8C8", "#E0E0E0", "#EEEEEE", "#F8F8F8"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Section page titles only (Segoe UI Variable Display)." },
+      "wordmark": { "displayName": "Wordmark", "purpose": "\"Headroom\" beside the Logo in the rail; used once." },
+      "title": { "displayName": "Title", "purpose": "Group headings, chip and style-tile labels, selected rail name." },
+      "body": { "displayName": "Body", "purpose": "Field and detail labels, rail names." },
+      "control": { "displayName": "Control", "purpose": "Segment labels (600 when picked), rail live values, page descriptions." },
+      "caption": { "displayName": "Caption", "purpose": "Notes, chip details, preview hint, ghost-slot labels, footer." }
+    },
+    "shadows": [],
+    "overlays": [
+      { "name": "rail-hover", "value": "#FFFFFF0A", "purpose": "Hover wash on an unselected rail row." },
+      { "name": "preview-hover", "value": "#FFFFFF14", "purpose": "Hover wash on a section or ghost slot in the taskbar-coloured preview." },
+      { "name": "ghost-divider", "value": "#FFFFFF26", "purpose": "1x20px divider at the left of each hidden-section slot." },
+      { "name": "off-section-dim", "value": "opacity 0.7", "purpose": "Chips, Style and Details groups of a hidden section." }
+    ],
+    "focus": { "value": "2px solid #F59E0B, 3px outside, radius = element radius + 3px", "purpose": "Keyboard focus on every Pressable." },
+    "motion": [
+      { "name": "ceiling-slide", "value": "180ms ease-out (x, width, opacity)", "purpose": "The amber ceiling bar moving to the edited section in the preview." },
+      { "name": "select-fade", "value": "150ms ease-out (opacity)", "purpose": "Ceiling bar on a picked segment or style tile." },
+      { "name": "switch-knob", "value": "150ms ease-out (x)", "purpose": "Toggle knob travel." }
+    ],
+    "window": { "preferred": "980x820", "minimum": "900x600", "rail": "220px", "previewZoomMax": 1.5, "previewZoomMin": 0.6, "previewRoom": "600px", "ghostSlot": "74px" }
+  },
+  "components": [
+    {
+      "name": "Switch",
+      "kind": "custom",
+      "refersTo": "toggle-on",
+      "description": "On/off control in a Field row; amber track when on.",
+      "html": "<div class=\"ds-switch-row\"><button class=\"ds-switch\" role=\"switch\" aria-checked=\"false\"><span></span></button><button class=\"ds-switch on\" role=\"switch\" aria-checked=\"true\"><span></span></button></div>",
+      "css": ".ds-switch-row { display: flex; gap: 16px; background: #1C1917; padding: 16px; } .ds-switch { position: relative; width: 42px; height: 22px; border: none; border-radius: 11px; background: #3A3532; cursor: pointer; padding: 0; } .ds-switch span { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 8px; background: #FAFAF9; transition: left 150ms ease-out; } .ds-switch:hover { background: #57534E; } .ds-switch.on { background: #F59E0B; } .ds-switch.on span { left: 23px; background: #1C1917; } .ds-switch:focus-visible { outline: 2px solid #F59E0B; outline-offset: 3px; }"
+    },
+    {
+      "name": "Segmented control",
+      "kind": "custom",
+      "refersTo": "segmented",
+      "description": "Every one-of-several choice; the picked option wears the amber ceiling bar.",
+      "html": "<div class=\"ds-seg\"><button class=\"ds-seg-opt picked\">Remaining</button><button class=\"ds-seg-opt\">Used</button></div>",
+      "css": ".ds-seg { display: flex; gap: 2px; height: 36px; padding: 3px; box-sizing: border-box; background: #0F0D0C; border: 1px solid #3A3532; border-radius: 7px; width: 260px; font-family: 'Segoe UI Variable Text', 'Segoe UI', sans-serif; } .ds-seg-opt { position: relative; flex: 1; min-width: 52px; border: none; border-radius: 5px; background: transparent; color: #A8A29E; font: 400 12px inherit; font-family: inherit; cursor: pointer; } .ds-seg-opt:hover { background: #292524; } .ds-seg-opt.picked { background: #332E2B; color: #FAFAF9; font-weight: 600; } .ds-seg-opt.picked::before { content: ''; position: absolute; left: 10px; right: 10px; top: 2px; height: 2px; border-radius: 1px; background: #F59E0B; } .ds-seg-opt:focus-visible { outline: 2px solid #F59E0B; outline-offset: 3px; }"
+    },
+    {
+      "name": "Chip toggle",
+      "kind": "chip",
+      "refersTo": "chip-toggle",
+      "description": "A tick that reads as a card: what a section shows (a limit, a drive).",
+      "html": "<div class=\"ds-chips\"><button class=\"ds-chip on\"><span class=\"ds-tick\"><svg viewBox=\"0 0 12 12\" width=\"12\" height=\"12\"><path d=\"M 2 6.5 L 5 9.5 L 10.5 3\" fill=\"none\" stroke=\"#1C1917\" stroke-width=\"2\"/></svg></span><span class=\"ds-chip-text\"><b>5-hour</b><small>Session limit</small></span></button><button class=\"ds-chip\"><span class=\"ds-tick\"></span><span class=\"ds-chip-text\"><b>Fable</b><small>Model limit</small></span></button></div>",
+      "css": ".ds-chips { display: flex; gap: 8px; background: #1C1917; padding: 16px; font-family: 'Segoe UI Variable Text', 'Segoe UI', sans-serif; } .ds-chip { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 132px; height: 54px; padding: 0 16px 0 12px; background: #292524; border: 1px solid #3A3532; border-radius: 8px; cursor: pointer; text-align: left; font-family: inherit; } .ds-chip:hover { background: #332E2B; } .ds-chip.on { border-color: #57534E; } .ds-chip:focus-visible { outline: 2px solid #F59E0B; outline-offset: 3px; } .ds-tick { display: grid; place-items: center; width: 18px; height: 18px; box-sizing: border-box; border-radius: 4px; border: 1.5px solid #A8A29E; } .ds-chip.on .ds-tick { background: #F59E0B; border: none; } .ds-chip-text { display: flex; flex-direction: column; gap: 1px; } .ds-chip-text b { font-size: 13px; font-weight: 600; color: #A8A29E; } .ds-chip.on .ds-chip-text b { color: #FAFAF9; } .ds-chip-text small { font-size: 11px; color: #A8A29E; }"
+    },
+    {
+      "name": "Field row",
+      "kind": "card",
+      "refersTo": "field",
+      "description": "A setting across the page: label and note left, control right.",
+      "html": "<div class=\"ds-field\"><div><div class=\"ds-field-label\">Start with Windows</div><div class=\"ds-field-note\">Launch Headroom when you sign in.</div></div><span class=\"ds-field-ctl\"></span></div>",
+      "css": ".ds-field { display: flex; align-items: center; gap: 20px; min-height: 54px; box-sizing: border-box; padding: 9px 12px 9px 16px; background: #292524; border: 1px solid #3A3532; border-radius: 8px; font-family: 'Segoe UI Variable Text', 'Segoe UI', sans-serif; } .ds-field > div { flex: 1; } .ds-field-label { font-size: 13px; color: #FAFAF9; } .ds-field-note { font-size: 11px; color: #A8A29E; margin-top: 1px; } .ds-field-ctl { width: 42px; height: 22px; border-radius: 11px; background: #F59E0B; }"
+    },
+    {
+      "name": "Rail item",
+      "kind": "nav",
+      "refersTo": "rail-item",
+      "description": "Section navigation in the 220px deck-coloured rail, with a live value.",
+      "html": "<nav class=\"ds-rail\"><button class=\"ds-rail-item sel\"><span class=\"ds-rail-mark\"></span><span class=\"ds-rail-name\">Claude</span><span class=\"ds-rail-val\">42%</span></button><button class=\"ds-rail-item\"><span class=\"ds-rail-mark\"></span><span class=\"ds-rail-name\">RAM</span><span class=\"ds-rail-val\">61%</span></button><button class=\"ds-rail-item off\"><span class=\"ds-rail-mark\"></span><span class=\"ds-rail-name\">CPU</span><span class=\"ds-rail-val\">Off</span></button></nav>",
+      "css": ".ds-rail { display: flex; flex-direction: column; gap: 2px; width: 220px; box-sizing: border-box; padding: 14px; background: #0F0D0C; font-family: 'Segoe UI Variable Text', 'Segoe UI', sans-serif; } .ds-rail-item { display: flex; align-items: center; gap: 11px; height: 38px; padding: 0 12px 0 10px; border: none; border-radius: 7px; background: transparent; cursor: pointer; font-family: inherit; } .ds-rail-item:hover { background: #FFFFFF0A; } .ds-rail-item.sel { background: #292524; } .ds-rail-item:focus-visible { outline: 2px solid #F59E0B; outline-offset: 3px; } .ds-rail-mark { width: 18px; height: 18px; border-radius: 4px; background: #FAFAF9; } .ds-rail-item.sel .ds-rail-mark { background: #F59E0B; } .ds-rail-item.off .ds-rail-mark { background: #A8A29E; } .ds-rail-name { flex: 1; text-align: left; font-size: 13px; color: #FAFAF9; } .ds-rail-item.sel .ds-rail-name { font-weight: 600; } .ds-rail-item.off .ds-rail-name { color: #A8A29E; } .ds-rail-val { font-size: 12px; color: #A8A29E; }"
+    },
+    {
+      "name": "Style tile",
+      "kind": "custom",
+      "refersTo": "style-tile",
+      "description": "One style shown as the section rendered that way; picked tile wears the amber ceiling bar.",
+      "html": "<div class=\"ds-tiles\"><button class=\"ds-tile sel\"><span class=\"ds-tile-art\">42% 78%</span><b>Numbers</b><small>Compact and easiest to read.</small></button><button class=\"ds-tile\"><span class=\"ds-tile-art\">&#9711; 42%</span><b>Rings</b><small>A ring beside each number.</small></button></div>",
+      "css": ".ds-tiles { display: flex; gap: 12px; background: #1C1917; padding: 16px; font-family: 'Segoe UI Variable Text', 'Segoe UI', sans-serif; } .ds-tile { position: relative; flex: 1; display: flex; flex-direction: column; gap: 2px; padding: 14px 12px 12px; background: #292524; border: 1px solid #3A3532; border-radius: 10px; cursor: pointer; text-align: left; font-family: inherit; } .ds-tile:hover, .ds-tile.sel { background: #332E2B; } .ds-tile.sel { border-color: #57534E; } .ds-tile.sel::before { content: ''; position: absolute; left: 16px; right: 16px; top: 0; height: 3px; border-radius: 1.5px; background: #F59E0B; } .ds-tile:focus-visible { outline: 2px solid #F59E0B; outline-offset: 3px; } .ds-tile-art { display: grid; place-items: center; height: 76px; margin-bottom: 8px; border-radius: 6px; background: #202020; color: #FFFFFF; font-size: 14px; } .ds-tile b { font-size: 13px; font-weight: 600; color: #FAFAF9; } .ds-tile small { font-size: 11px; color: #A8A29E; }"
+    },
+    {
+      "name": "Preview strip",
+      "kind": "custom",
+      "description": "The live widget on the user's taskbar colour; the edited section wears a sliding amber ceiling bar; hidden sections wait as dimmed + slots.",
+      "html": "<div class=\"ds-deck\"><div class=\"ds-strip\"><span class=\"ds-spot sel\">Claude 42%</span><span class=\"ds-spot\">RAM 61%</span><span class=\"ds-ghost\">+ CPU</span></div></div>",
+      "css": ".ds-deck { display: flex; justify-content: center; padding: 38px 16px; background: #0F0D0C; font-family: 'Segoe UI Variable Text', 'Segoe UI', sans-serif; } .ds-strip { display: flex; align-items: center; gap: 4px; padding: 10px 12px; border-radius: 10px; background: #202020; } .ds-spot { position: relative; padding: 14px 12px; border-radius: 6px; color: #FFFFFF; font-size: 14px; cursor: pointer; } .ds-spot:hover:not(.sel), .ds-ghost:hover { background: #FFFFFF14; } .ds-spot.sel::before { content: ''; position: absolute; left: 8px; right: 8px; top: -4px; height: 3px; border-radius: 1.5px; background: #F59E0B; transition: left 180ms ease-out, right 180ms ease-out; } .ds-ghost { width: 70px; padding: 14px 0; text-align: center; border-left: 1px solid #FFFFFF26; border-radius: 6px; color: #A8A29E; font-size: 11px; cursor: pointer; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Widget, Enlarged",
+    "overview": "The settings window is the taskbar widget blown up and laid open. A live replica of the user's own taskbar sits in a dark deck at the top; it is both the preview and the navigation. Every choice below it is shown as the render it produces, not described in a checkbox list. The world is Ember, the same charcoal-and-amber palette as the Headroom mark: warm near-black stone surfaces in three depths, one off-white for text, and amber reserved for \"this one\" and \"on\".\n\nDensity is moderate desktop-tool density: 13px body, 54px rows, 8px card corners, one font family. Depth comes from tonal steps of the stone ramp and 1px hairlines, never shadows. The mark's ceiling bar (a thin amber rule) is the system's single signature: it sits over whatever is selected, in the preview, on a style tile, on a segment.\n\nThe window refuses the category default of a grey sidebar over stacked checkbox pages, and it refuses the generic Windows dialog look: even the title bar is painted charcoal.",
+    "keyCharacteristics": [
+      "One live preview that doubles as navigation.",
+      "Three stone depths (deck, ground, raised) separated by hairlines; flat, no shadows.",
+      "Amber only for selection and on-states, shown as a ceiling bar, a filled tick or a filled switch.",
+      "Choices are rendered, not described: style tiles carry the real section art.",
+      "One family, Segoe UI Variable, Display cut for page titles only."
+    ],
+    "rules": [
+      { "name": "The Ceiling Rule", "body": "Amber marks \"this one\" or \"on\" and nothing else. A selection is shown by an amber ceiling bar on the element's top edge (2-3px tall, inset from the corners); an on-state by an amber fill. No amber text, no amber headings, no amber decoration.", "section": "colors" },
+      { "name": "The Real Taskbar Rule", "body": "The preview and every rendered choice sit on the user's actual taskbar colour, never on an Ember surface, because the point is to show what they will really see.", "section": "colors" },
+      { "name": "The One Family Rule", "body": "Segoe UI Variable throughout; the Display optical cut appears only at 22px page titles.", "section": "typography" },
+      { "name": "The Stone Steps Rule", "body": "Elevation is a lighter stone step plus a hairline, never a shadow or glow.", "section": "elevation" },
+      { "name": "The Dim, Don't Hide Rule", "body": "When a section is off, its settings stay visible and usable at 0.7 opacity; in the preview it waits at the strip's end as a muted \"+ Name\" slot. Nothing disappears because it is off.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do show a choice as the render it produces (a style tile, the live preview), not as a sentence.",
+      "Do mark selection with the amber ceiling bar on the element's top edge, and on-states with an amber fill.",
+      "Do build depth from the stone steps (deck, ground, raised, raised-hover) plus 1px hairlines.",
+      "Do use the Segmented control for every one-of-several choice and the Switch for every on/off row.",
+      "Do dim off sections' settings to 0.7 opacity and keep them operable.",
+      "Do keep every pressable keyboard-reachable with the 2px amber focus ring 3px outside the element.",
+      "Do keep the \"Unofficial. Not affiliated with Anthropic or OpenAI.\" line in the rail footer."
+    ],
+    "donts": [
+      "Don't use amber for text, headings or decoration; it means selected or on.",
+      "Don't use shadows or glows for elevation.",
+      "Don't stack long checkbox lists; options that a section shows are chip toggles in one row.",
+      "Don't add a second typeface or uppercase labels; hierarchy is size and weight within Segoe UI Variable.",
+      "Don't put the Claude or OpenAI marks in Headroom's own branding (rail Logo, title bar icon); they identify sections only.",
+      "Don't let the window fall back to system grey chrome; the title bar is charcoal."
+    ]
+  }
+}

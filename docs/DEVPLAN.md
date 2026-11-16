@@ -93,6 +93,10 @@ Every request path, Claude and Codex:
 | Self-update **removed** | Upstream updater would replace Headroom with the original exe; it was dead code |
 | Codex mark = OpenAI logo (owner's call; was `>_`) | Recognizable at a glance. `assets/codex_mark.a8` from Simple Icons `openai.svg` (simple-icons@11.0.0) via WPF `Geometry.Parse`. Shipped publicly; **owner decided to keep it** (2026-11-13) |
 | RAM mark = Lucide `memory-stick` (ISC) | `assets/ram_mark.a8`, same pipeline (stroke 2, round caps) |
+| CPU section: busy % from `GetSystemTimes`, mark = Lucide `cpu` | Same 2 s timer as RAM; `assets/cpu_mark.a8` |
+| Drives section: % used of fixed drives, mark = Lucide `hard-drive` | Sampled every 60 s; USB/network/optical left out; at most 3 shown (one per group slot), all in the tooltip; per-drive ticks under Show → Drives |
+| Ported upstream v1.3.0 (2026-11-16): 75/95 warning colors, ring number fit, ClearType, vertical taskbar | Skipped its niche ring options, Hide %, dev fake data |
+| Per-section look (remaining, labels, icon, rings) + Slint settings window | `headroom.exe --settings`, a separate process: widget's Win32 loop untouched, nothing in memory when closed. Registry is the contract; the window posts `WM_APP_RELOAD` to `HeadroomCtl`. Old global keys are the fallback for per-section ones. Slint (software renderer, winit) over egui (doesn't look like Windows) and WebView2 (50–100 MB while open). Royalty-free licence: badge in README |
 | Fable limit hidden by default | Rarely relevant; one menu tick away |
 | Brand palette "Ember" | Owner's pick over graphite+mint, traffic, aurora, ink, lime |
 | Releases built by GitHub Actions from tags | Reproducible, not tied to one PC |
