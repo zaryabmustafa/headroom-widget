@@ -4,6 +4,7 @@ mod api;
 mod codex;
 mod http;
 mod render;
+mod settings_ui;
 
 use http::wide;
 use std::cell::{Cell, RefCell};
@@ -29,6 +30,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::core::w;
 
 const WM_APP_RESULT: u32 = WM_APP + 1;
+/// Sent by the settings window after it changes a setting.
+const WM_APP_RELOAD: u32 = WM_APP + 2;
 const T_LAYOUT: usize = 1; // keeps the widget attached and positioned
 const T_ROLL: usize = 5; // animation frames while numbers roll
 /// How long a changed number rolls.
@@ -36,35 +39,52 @@ const ROLL_SECS: f32 = 0.45;
 const T_TICK: usize = 3; // refreshes tooltip countdowns
 const T_RAM: usize = 6; // samples memory use
 const RAM_EVERY_MS: u32 = 2000;
+const T_DRIVES: usize = 7; // samples disk space; disks fill slowly
+const DRIVES_EVERY_MS: u32 = 60_000;
+/// Drives that fit in the section: one per group (the 5h / W / Fable slots).
+/// ponytail: more drives would need N groups per row in render.rs.
+const MAX_DRIVES_SHOWN: usize = 3;
+const DRIVE_LETTERS: [&str; 26] = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
+    "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"];
 const T_FETCH_BASE: usize = 1000; // + account id, one-shot: that account's next fetch
 
 const ID_REFRESH: usize = 1;
 const ID_OPEN: usize = 2;
-const ID_AUTOSTART: usize = 3;
 const ID_EXIT: usize = 4;
-const ID_SHOW_LEFT: usize = 5;
-const ID_HIDE_ICON: usize = 6;
-const ID_HIDE_LABELS: usize = 8;
-const ID_ON_LEFT: usize = 11;
-const ID_PIXEL_ICON: usize = 12;
-const ID_RINGS: usize = 13;
-const ID_RING_TEXT: usize = 14;
-const ID_ROLL: usize = 15;
-const ID_HIDE_FIVE: usize = 16;
-const ID_HIDE_WEEK: usize = 17;
-const ID_HIDE_FABLE: usize = 18;
-const ID_CLAUDE_ICON: usize = 19;
-const ID_HIDE_CODEX: usize = 20;
-const ID_HIDE_RAM: usize = 21;
-const ID_OPEN_CODEX: usize = 22;
-const ID_HIDE_CLAUDE: usize = 23;
 const ID_ADD_ACCOUNT: usize = 7;
+const ID_SETTINGS: usize = 9;
+const ID_OPEN_CODEX: usize = 22;
 const ID_REMOVE_BASE: usize = 300; // + index into accounts
-const ID_PER_COL_BASE: usize = 400; // + accounts per column (1 to 3)
+const ID_SHOW_BASE: usize = 800; // + section index: show or hide that section
 const DEFAULT_PER_COL: u32 = 2;
-const ID_FONT_BASE: usize = 200; // + index into FONT_SIZES
-const ID_ICON_SIZE_BASE: usize = 500; // + index into ICON_SIZES
-const ID_INTERVAL_BASE: usize = 100; // + index into INTERVALS
+
+/// The widget's sections, left to right. Settings keys of a section's look start with
+/// its name (`ClaudeRings`); `SECTION_HIDE_KEYS` turn whole sections off.
+const SECTIONS: [&str; 5] = ["Claude", "Codex", "Ram", "Cpu", "Drives"];
+const SECTION_NAMES: [&str; 5] = ["Claude", "Codex", "RAM", "CPU", "Drives"];
+const SECTION_HIDE_KEYS: [&str; 5] = ["HideClaude", "HideCodex", "HideRam", "HideCpu", "HideDrives"];
+const CLAUDE: usize = 0;
+const CODEX: usize = 1;
+const RAM: usize = 2;
+const CPU: usize = 3;
+const DRIVES: usize = 4;
+/// Look settings each section has, per section. Before v0.1.10 they were global;
+/// a section without its own value uses the old global one.
+const LOOK_KEYS: [&str; 5] = ["ShowRemaining", "HideLabels", "HideIcon", "Rings", "RingText"];
+
+/// How one section is drawn.
+#[derive(Clone, Copy, PartialEq)]
+struct Look {
+    /// Show what's left (100 - used) instead of what's used.
+    show_left: bool,
+    /// Leave out the `5h` / `W` labels.
+    hide_labels: bool,
+    hide_icon: bool,
+    /// A progress ring for each number, and whether the number sits inside it.
+    rings: bool,
+    ring_text: bool,
+}
+const PLAIN: Look = Look { show_left: false, hide_labels: false, hide_icon: false, rings: false, ring_text: false };
 
 /// Update interval choices (seconds, menu label).
 /// No faster than once a minute: these are undocumented endpoints, so stay a quiet client.
@@ -106,27 +126,20 @@ type RowKey = (u8, Option<i64>, Option<i64>, Option<i64>, bool, Option<u32>);
 #[derive(Clone, PartialEq)]
 struct RenderKey {
     h: i32,
+    vertical: bool,
     dpi: u32,
     dark: bool,
     hover: bool,
     rows: Vec<RowKey>,
-    /// Rounded memory use, when shown.
+    /// Rounded memory and CPU use.
     ram: Option<i64>,
-    hide_claude: bool,
-    hide_codex: bool,
-    hide_five_codex: bool,
-    show_left: bool,
-    font_size: u32,
-    icon_size: u32,
-    hide_icon: bool,
-    pixel_icon: bool,
-    rings: bool,
-    ring_text: bool,
-    hide_labels: bool,
-    hide_five: bool,
-    hide_week: bool,
-    hide_fable: bool,
-    rows_per_col: u32,
+    cpu: Option<i64>,
+    /// Internal drives: letter index and rounded % used.
+    drives: Vec<(u8, i64)>,
+    /// The 5-hour group hides itself for plans without one (Claude, Codex).
+    hide_five: [bool; 2],
+    /// Bumped whenever settings are (re)loaded.
+    settings: u32,
 }
 
 /// Where an account's numbers come from.
@@ -134,6 +147,14 @@ struct RenderKey {
 enum Provider {
     Claude,
     Codex,
+}
+
+/// What clicking a section opens.
+#[derive(Clone, Copy)]
+enum Target {
+    Usage(Provider),
+    TaskManager,
+    ThisPc,
 }
 
 impl Provider {
@@ -201,22 +222,17 @@ struct State {
     pos: (i32, i32, i32, i32),
     /// Seconds between usage fetches.
     interval: u32,
-    /// Show what's left instead of what's used.
-    show_left: bool,
+    /// Each section's look, by section index.
+    looks: [Look; 5],
+    /// Bumped on every settings load, so the widget redraws.
+    settings_gen: u32,
     /// Text size in pixels at 100% scaling.
     font_size: u32,
     icon_size: u32,
-    /// Leave out the Claude mark.
-    hide_icon: bool,
-    /// Leave out the `5h` / `W` labels.
-    hide_labels: bool,
     /// Sit at the taskbar's left end instead of next to the tray.
     on_left: bool,
     /// Pixel-art mark instead of the asterisk.
     pixel_icon: bool,
-    /// A progress ring for each limit, and whether its number sits inside it.
-    rings: bool,
-    ring_text: bool,
     /// Roll the digits when a number changes.
     roll: bool,
     /// Limits turned off in "Show/hide limits". The 5-hour and Fable groups
@@ -224,17 +240,29 @@ struct State {
     hide_five: bool,
     hide_week: bool,
     hide_fable: bool,
-    /// Leave out the Codex section, or the RAM readout.
+    /// Codex's own 5-hour and weekly choices.
+    codex_hide_five: bool,
+    codex_hide_week: bool,
+    /// Whole sections turned off.
     hide_claude: bool,
     hide_codex: bool,
     hide_ram: bool,
+    hide_cpu: bool,
+    hide_drives: bool,
+    /// Drives show their size (used, or free with "remaining") instead of a percentage.
+    drive_size: bool,
+    /// Drives turned off one by one: bit n is drive letter A + n.
+    hidden_drives: u32,
+    /// Internal drives: letter index (A = 0), bytes used, bytes total.
+    drives: Vec<(u8, u64, u64)>,
     /// Memory: percent used, used bytes, total bytes.
     ram: Option<(f64, u64, u64)>,
     /// CPU load in percent (tooltip only), and the last (idle, total) times it came from.
     cpu: Option<f64>,
     cpu_prev: (u64, u64),
-    /// Each section's right edge in widget pixels, and its provider (None = RAM), for clicks.
-    sections: Vec<(i32, Option<Provider>)>,
+    /// Each section's far edge in widget pixels (right, or bottom on a vertical taskbar),
+    /// and what clicking it opens.
+    sections: Vec<(i32, Target)>,
     /// Accounts stacked in each column of the widget.
     rows_per_col: u32,
 }
@@ -244,13 +272,13 @@ thread_local! {
         ctl: null_mut(), widget: null_mut(), tip: null_mut(), taskbar: null_mut(),
         taskbar_created_msg: 0, accounts: Vec::new(), next_id: 0,
         hover: false, dark: false, rendered: None, pos: (0, 0, 0, 0),
-        interval: DEFAULT_INTERVAL, show_left: false,
-        font_size: DEFAULT_FONT_SIZE, icon_size: DEFAULT_ICON_SIZE, hide_icon: false, hide_labels: false, on_left: false, pixel_icon: false, rings: false, ring_text: false, roll: false, hide_five: false, hide_week: false, hide_fable: false, hide_claude: false, hide_codex: false, hide_ram: false, ram: None, rows_per_col: DEFAULT_PER_COL,
+        interval: DEFAULT_INTERVAL, looks: [PLAIN; 5], settings_gen: 0,
+        font_size: DEFAULT_FONT_SIZE, icon_size: DEFAULT_ICON_SIZE, on_left: false, pixel_icon: false, roll: false, hide_five: false, codex_hide_five: false, codex_hide_week: false, hide_week: false, hide_fable: false, hide_claude: false, hide_codex: false, hide_ram: false, hide_cpu: false, hide_drives: false, drive_size: false, hidden_drives: 0, drives: Vec::new(), ram: None, rows_per_col: DEFAULT_PER_COL,
         cpu: None, cpu_prev: (0, 0), sections: Vec::new(),
     }) };
 }
 
-fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
+pub(crate) fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
     ST.with(|s| f(&mut s.borrow_mut()))
 }
 
@@ -259,6 +287,10 @@ fn now() -> i64 {
 }
 
 fn main() {
+    if std::env::args().any(|a| a == "--settings") {
+        settings_ui::run();
+        return;
+    }
     unsafe {
         // Single instance.
         CreateMutexW(null(), 0, w!("Local\\Headroom.Singleton"));
@@ -299,32 +331,7 @@ fn main() {
             s.ctl = ctl;
             s.taskbar_created_msg = msg;
             s.dark = system_dark();
-            s.interval = read_setting("IntervalSeconds")
-                .filter(|v| (60..=1800).contains(v))
-                .unwrap_or(DEFAULT_INTERVAL);
-            s.show_left = read_setting("ShowRemaining") == Some(1);
-            s.icon_size = read_setting("IconSize")
-                .filter(|v| ICON_SIZES.iter().any(|(px, _)| px == v))
-                .unwrap_or(DEFAULT_ICON_SIZE);
-            s.font_size = read_setting("FontSize")
-                .filter(|v| FONT_SIZES.iter().any(|(f, _)| f == v))
-                .unwrap_or(DEFAULT_FONT_SIZE);
-            s.hide_icon = read_setting("HideIcon") == Some(1);
-            s.hide_labels = read_setting("HideLabels") == Some(1);
-            s.on_left = read_setting("OnLeft") == Some(1);
-            s.pixel_icon = read_setting("PixelIcon") == Some(1);
-            s.rings = read_setting("Rings") == Some(1);
-            s.ring_text = read_setting("RingText") == Some(1);
-            s.roll = read_setting("RollNumbers") == Some(1);
-            s.hide_five = read_setting("HideFiveHour") == Some(1);
-            s.hide_week = read_setting("HideWeekly") == Some(1);
-            s.hide_fable = read_setting("HideFable") != Some(0); // hidden unless turned on
-            s.hide_claude = read_setting("HideClaude") == Some(1);
-            s.hide_codex = read_setting("HideCodex") == Some(1);
-            s.hide_ram = read_setting("HideRam") == Some(1);
-            s.rows_per_col = read_setting("AccountsPerColumn")
-                .filter(|v| (1..=render::MAX_ROWS_PER_COLUMN as u32).contains(v))
-                .unwrap_or(DEFAULT_PER_COL);
+            load_settings(s);
             for (dir, kind) in load_account_dirs() {
                 let id = s.next_id;
                 s.next_id += 1;
@@ -332,10 +339,12 @@ fn main() {
             }
         });
         sample_ram();
+        sample_drives();
         ensure_widget();
         SetTimer(ctl, T_LAYOUT, 1000, None);
         SetTimer(ctl, T_TICK, 30_000, None);
         SetTimer(ctl, T_RAM, RAM_EVERY_MS, None);
+        SetTimer(ctl, T_DRIVES, DRIVES_EVERY_MS, None);
         // Restarting shouldn't mean asking again: keep a minute since the last
         // request (any instance), so quick restarts don't burst the servers.
         let wait = read_setting("LastFetch").map_or(0, |t| t as i64 + MIN_FETCH_GAP_SECS - now());
@@ -353,6 +362,87 @@ fn main() {
             DispatchMessageW(&m);
         }
     }
+}
+
+// ---------- settings ----------
+
+/// A setting's value: its own registry value, else (for a section's look or Codex's
+/// limits) the global one it replaced, else its default.
+pub(crate) fn setting(key: &str) -> u32 {
+    if let Some(v) = read_setting(key) {
+        return v;
+    }
+    for p in SECTIONS {
+        if let Some(rest) = key.strip_prefix(p) {
+            if LOOK_KEYS.contains(&rest) || (p == "Codex" && matches!(rest, "HideFiveHour" | "HideWeekly")) {
+                return setting(rest);
+            }
+        }
+    }
+    match key {
+        "HideFable" => 1, // hidden unless turned on
+        "IntervalSeconds" => DEFAULT_INTERVAL,
+        "FontSize" => DEFAULT_FONT_SIZE,
+        "IconSize" => DEFAULT_ICON_SIZE,
+        "AccountsPerColumn" => DEFAULT_PER_COL,
+        _ => 0,
+    }
+}
+
+/// Reads every setting into `s`: at startup, and after the settings window changes one.
+pub(crate) fn load_settings(s: &mut State) {
+    let on = |k: &str| setting(k) == 1;
+    let pick = |k: &str, ok: &dyn Fn(u32) -> bool, default: u32| Some(setting(k)).filter(|v| ok(*v)).unwrap_or(default);
+    s.interval = pick("IntervalSeconds", &|v| (60..=1800).contains(&v), DEFAULT_INTERVAL);
+    s.icon_size = pick("IconSize", &|v| ICON_SIZES.iter().any(|(px, _)| *px == v), DEFAULT_ICON_SIZE);
+    s.font_size = pick("FontSize", &|v| FONT_SIZES.iter().any(|(px, _)| *px == v), DEFAULT_FONT_SIZE);
+    s.rows_per_col = pick("AccountsPerColumn", &|v| (1..=render::MAX_ROWS_PER_COLUMN as u32).contains(&v), DEFAULT_PER_COL);
+    for (look, p) in s.looks.iter_mut().zip(SECTIONS) {
+        let k = |name: &str| on(&format!("{p}{name}"));
+        *look = Look {
+            show_left: k("ShowRemaining"),
+            hide_labels: k("HideLabels"),
+            hide_icon: k("HideIcon"),
+            rings: k("Rings"),
+            ring_text: k("RingText"),
+        };
+    }
+    s.on_left = on("OnLeft");
+    s.pixel_icon = on("PixelIcon");
+    s.roll = on("RollNumbers");
+    s.hide_five = on("HideFiveHour");
+    s.hide_week = on("HideWeekly");
+    s.hide_fable = on("HideFable");
+    s.codex_hide_five = on("CodexHideFiveHour");
+    s.codex_hide_week = on("CodexHideWeekly");
+    s.hide_claude = on("HideClaude");
+    s.hide_codex = on("HideCodex");
+    s.hide_ram = on("HideRam");
+    s.hide_cpu = on("HideCpu");
+    s.hide_drives = on("HideDrives");
+    s.hidden_drives = setting("HiddenDrives");
+    s.drive_size = on("DrivesSize");
+    s.settings_gen = s.settings_gen.wrapping_add(1);
+}
+
+/// Re-reads settings after a change and redraws.
+fn reload_settings() {
+    let interval_changed = with(|s| {
+        let old = s.interval;
+        load_settings(s);
+        old != s.interval
+    });
+    ensure_widget();
+    update_tooltip();
+    // A new pace applies right away: fetch now, then keep it. Accounts that are
+    // mid-fetch pick it up when they finish.
+    if interval_changed {
+        start_fetch_all();
+    }
+}
+
+fn section_hidden(s: &State, i: usize) -> bool {
+    [s.hide_claude, s.hide_codex, s.hide_ram, s.hide_cpu, s.hide_drives][i]
 }
 
 // ---------- data ----------
@@ -434,7 +524,7 @@ fn backoff_secs(interval: u32, rate_limited: u32) -> u32 {
 }
 
 /// Reads memory use. Returns true when the rounded percent changed.
-fn sample_ram() -> bool {
+pub(crate) fn sample_ram() -> bool {
     use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
     let mut ms: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
     ms.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
@@ -450,23 +540,78 @@ fn sample_ram() -> bool {
     })
 }
 
+/// Reads used and total space of every internal (fixed) drive. Returns whether a
+/// rounded percentage, or the set of drives, changed.
+pub(crate) fn sample_drives() -> bool {
+    use windows_sys::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives};
+    let mask = unsafe { GetLogicalDrives() };
+    let mut drives = Vec::new();
+    for n in 0..26u8 {
+        if mask & (1 << n) == 0 {
+            continue;
+        }
+        let root = wide(&format!("{}:\\", (b'A' + n) as char));
+        // DRIVE_FIXED: internal disks. USB sticks, network and optical drives are left out.
+        if unsafe { GetDriveTypeW(root.as_ptr()) } != 3 {
+            continue;
+        }
+        let (mut total, mut free) = (0u64, 0u64);
+        if unsafe { GetDiskFreeSpaceExW(root.as_ptr(), null_mut(), &mut total, &mut free) } != 0 && total > 0 {
+            drives.push((n, total.saturating_sub(free), total));
+        }
+    }
+    let key = |d: &[(u8, u64, u64)]| d.iter().map(|&(n, u, t)| (n, (u as f64 * 100.0 / t as f64).round() as i64)).collect::<Vec<_>>();
+    with(|s| {
+        let changed = key(&s.drives) != key(&drives);
+        s.drives = drives;
+        changed
+    })
+}
+
+/// A drive size the way Explorer writes it: binary units, three significant digits
+/// ("26.2 GB", "336 GB", "1.88 TB").
+fn size_text(bytes: u64) -> String {
+    let gb = bytes as f64 / (1u64 << 30) as f64;
+    let (v, unit) = if gb >= 1000.0 { (gb / 1024.0, "TB") } else { (gb, "GB") };
+    match v {
+        v if v >= 99.95 => format!("{v:.0} {unit}"),
+        v if v >= 9.995 => format!("{v:.1} {unit}"),
+        v => format!("{v:.2} {unit}"),
+    }
+}
+
+/// The drives the section shows: internal ones not turned off, at most MAX_DRIVES_SHOWN.
+fn shown_drives(drives: &[(u8, u64, u64)], hide_all: bool, hidden: u32) -> Vec<(u8, f64)> {
+    if hide_all {
+        return Vec::new();
+    }
+    drives
+        .iter()
+        .filter(|(n, _, _)| hidden & (1 << n) == 0)
+        .take(MAX_DRIVES_SHOWN)
+        .map(|&(n, used, total)| (n, used as f64 * 100.0 / total as f64))
+        .collect()
+}
+
 /// Samples CPU load since the last call (busy share of kernel + user time).
-fn sample_cpu() {
+pub(crate) fn sample_cpu() -> bool {
     use windows_sys::Win32::System::Threading::GetSystemTimes;
     let (mut idle, mut kernel, mut user) = unsafe { std::mem::zeroed::<(FILETIME, FILETIME, FILETIME)>() };
     if unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) } == 0 {
-        return;
+        return false;
     }
     let t = |f: FILETIME| ((f.dwHighDateTime as u64) << 32) | f.dwLowDateTime as u64;
     // Kernel time includes idle time.
     let (idle, total) = (t(idle), t(kernel) + t(user));
     with(|s| {
         let (di, dt) = (idle.wrapping_sub(s.cpu_prev.0), total.wrapping_sub(s.cpu_prev.1));
+        let old = s.cpu.map(|c| c.round() as i64);
         if s.cpu_prev != (0, 0) && dt > 0 {
             s.cpu = Some(100.0 * dt.saturating_sub(di) as f64 / dt as f64);
         }
         s.cpu_prev = (idle, total);
-    });
+        s.cpu.map(|c| c.round() as i64) != old
+    })
 }
 
 // ---------- widget ----------
@@ -511,139 +656,32 @@ fn ensure_widget() {
         if tray.is_null() || GetWindowRect(tray, &mut tr) == 0 {
             tr = tb;
             tr.left = tb.right;
+            tr.top = tb.bottom;
         }
-        let h = tb.bottom - tb.top;
+        // A vertical taskbar (ExplorerPatcher, Windhawk, Windows 10) is taller than wide:
+        // sections then stack top to bottom and `h` is the bar's width.
+        let vertical = tb.bottom - tb.top > tb.right - tb.left;
+        let h = if vertical { tb.right - tb.left } else { tb.bottom - tb.top };
         let dpi = GetDpiForWindow(taskbar).max(96);
         let scale = dpi as f32 / 96.0;
 
         let (key, needs_render, models, hover, dark) = with(|s| {
-            let row_of = |a: &Account| {
-                let u = a.usage.unwrap_or_default();
-                render::Row {
-                    five: u.five_hour.map(|l| l.percent),
-                    week: u.weekly.map(|l| l.percent),
-                    fable: u.fable.map(|l| l.percent),
-                    roll: a.prev.and_then(|(o, at)| {
-                        let t = at.elapsed().as_secs_f32() / ROLL_SECS;
-                        let pct = |l: Option<api::Limit>| l.map(|l| l.percent);
-                        (t < 1.0).then_some(([pct(o.five_hour), pct(o.weekly), pct(o.fable)], t))
-                    }),
-                    stale: a.is_stale(),
-                }
-            };
-            // Plans without a 5-hour limit report none: hide that group on
-            // its own once every loaded account of the provider says so.
-            let hide_five_for = |kind: Provider| {
-                let mut loaded = s.accounts.iter().filter(|a| a.kind == kind).filter_map(|a| a.usage).peekable();
-                s.hide_five || (loaded.peek().is_some() && loaded.all(|u| !u.has_five_hour))
-            };
-            let hide_five = hide_five_for(Provider::Claude);
-            let hide_five_codex = hide_five_for(Provider::Codex);
-            let rows_of = |kind: Provider| -> Vec<render::Row> {
-                s.accounts.iter().filter(|a| a.kind == kind).map(row_of).collect()
-            };
-            let ram = if s.hide_ram { None } else { s.ram.map(|r| r.0) };
-            let pct = |v: Option<f64>| v.map(|p| p.round() as i64);
-            let key = RenderKey {
-                h,
-                dpi,
-                dark: s.dark,
-                hover: s.hover,
-                rows: s
-                    .accounts
-                    .iter()
-                    .map(|a| {
-                        let r = row_of(a);
-                        (a.kind as u8, pct(r.five), pct(r.week), pct(r.fable), r.stale, r.roll.map(|(_, t)| (t * 1000.0) as u32))
-                    })
-                    .collect(),
-                ram: pct(ram),
-                hide_claude: s.hide_claude,
-                hide_codex: s.hide_codex,
-                hide_five_codex,
-                show_left: s.show_left,
-                font_size: s.font_size,
-                icon_size: s.icon_size,
-                hide_icon: s.hide_icon,
-                pixel_icon: s.pixel_icon,
-                rings: s.rings,
-                ring_text: s.ring_text,
-                hide_labels: s.hide_labels,
-                hide_five,
-                hide_week: s.hide_week,
-                hide_fable: s.hide_fable,
-                rows_per_col: s.rows_per_col,
-            };
-            let model = |rows: Vec<render::Row>, mark: render::Mark, labels: [&'static str; 3], hide: [bool; 3], fixed: bool| {
-                render::Model {
-                    rows,
-                    hover: false, // drawn once, under all sections, by compose()
-                    dark: s.dark,
-                    show_left: s.show_left,
-                    font_size: s.font_size,
-                    icon_size: s.icon_size,
-                    mark,
-                    labels,
-                    fixed,
-                    rings: s.rings,
-                    ring_text: s.ring_text,
-                    hide_labels: s.hide_labels,
-                    hide_five: hide[0],
-                    hide_week: hide[1],
-                    hide_fable: hide[2],
-                    rows_per_col: s.rows_per_col as usize,
-                    last: false,
-                }
-            };
-            let usage_labels = ["5h", "W", "F"];
-            let claude_mark = if s.hide_icon {
-                render::Mark::None
-            } else if s.pixel_icon {
-                render::Mark::Pixel
-            } else {
-                render::Mark::Claude
-            };
-            let codex_mark = if s.hide_icon { render::Mark::None } else { render::Mark::Codex };
-            // Each section's model, and which provider it is (None = RAM) for clicks.
-            let mut models = Vec::new();
-            let claude_rows = rows_of(Provider::Claude);
-            if !claude_rows.is_empty() && !s.hide_claude {
-                models.push((model(claude_rows, claude_mark, usage_labels, [hide_five, s.hide_week, s.hide_fable], false), Some(Provider::Claude)));
-            }
-            let codex_rows = rows_of(Provider::Codex);
-            if !codex_rows.is_empty() && !s.hide_codex {
-                models.push((model(codex_rows, codex_mark, usage_labels, [hide_five_codex, s.hide_week, true], false), Some(Provider::Codex)));
-            }
-            if let Some(p) = ram {
-                let row = render::Row { five: Some(p), week: None, fable: None, roll: None, stale: false };
-                let m = if s.hide_icon {
-                    model(vec![row], render::Mark::None, ["RAM", "", ""], [false, true, true], true)
-                } else {
-                    // The icon replaces the "RAM" label.
-                    let m = model(vec![row], render::Mark::Ram, ["", "", ""], [false, true, true], true);
-                    render::Model { hide_labels: true, ..m }
-                };
-                models.push((m, None));
-            }
-            if models.is_empty() {
-                models.push((model(Vec::new(), claude_mark, usage_labels, [s.hide_five, s.hide_week, s.hide_fable], false), Some(Provider::Claude)));
-            }
-            if let Some((m, _)) = models.last_mut() {
-                m.last = true;
-            }
+            let key = render_key(s, h, vertical, dpi);
             let changed = s.rendered.as_ref() != Some(&key);
-            (key, changed, models, s.hover, s.dark)
+            (key, changed, build_models(s), s.hover, s.dark)
         });
 
-        let mut w = with(|s| s.pos.2);
+        let (mut w, mut wh) = with(|s| (s.pos.2, s.pos.3));
         if needs_render {
-            let frames: Vec<render::Frame> = models.iter().map(|(m, _)| render::render(m, h, scale)).collect();
-            let frame = render::compose(&frames, h, scale, dark, hover);
-            w = frame.w;
+            let frames: Vec<render::Frame> = if vertical {
+                render::render_vertical(&models.iter().map(|(m, _)| m).collect::<Vec<_>>(), scale, h)
+            } else {
+                models.iter().map(|(m, _)| render::render(m, h, scale)).collect()
+            };
+            let (frame, ends) = render::compose(&frames, h, scale, dark, hover, vertical);
+            (w, wh) = (frame.w, frame.h);
             present(widget, &frame);
-            // compose() lays frames out left to right, so right edges are running sums.
-            let mut right = 0;
-            let sections = frames.iter().zip(&models).map(|(f, (_, p))| { right += f.w; (right, *p) }).collect();
+            let sections = ends.into_iter().zip(models.iter().map(|(_, p)| *p)).collect();
             with(|s| {
                 s.rendered = Some(key);
                 s.sections = sections;
@@ -651,9 +689,16 @@ fn ensure_widget() {
         }
 
         let gap = (2.0 * scale) as i32;
-        // The left end is free on a centered taskbar (unless the Widgets button is on).
-        let x = if with(|s| s.on_left) { gap } else { tr.left - tb.left - w - gap };
-        let pos = (x.max(0), 0, w, h);
+        let on_left = with(|s| s.on_left);
+        let pos = if vertical {
+            // Centered across the bar, above the tray, or at the top with "left side".
+            let y = if on_left { gap } else { tr.top - tb.top - wh - gap };
+            (((h - w) / 2).max(0), y.max(0), w, wh)
+        } else {
+            // The left end is free on a centered taskbar (unless the Widgets button is on).
+            let x = if on_left { gap } else { tr.left - tb.left - w - gap };
+            (x.max(0), 0, w, h)
+        };
         let moved = with(|s| {
             let changed = s.pos != pos;
             s.pos = pos;
@@ -666,6 +711,133 @@ fn ensure_widget() {
                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
         }
     }
+}
+
+fn row_of(a: &Account) -> render::Row {
+    let u = a.usage.unwrap_or_default();
+    render::Row {
+        five: u.five_hour.map(|l| l.percent),
+        week: u.weekly.map(|l| l.percent),
+        fable: u.fable.map(|l| l.percent),
+        roll: a.prev.and_then(|(o, at)| {
+            let t = at.elapsed().as_secs_f32() / ROLL_SECS;
+            let pct = |l: Option<api::Limit>| l.map(|l| l.percent);
+            (t < 1.0).then_some(([pct(o.five_hour), pct(o.weekly), pct(o.fable)], t))
+        }),
+        stale: a.is_stale(),
+    }
+}
+
+/// Whether a provider's 5-hour group is hidden: turned off, or (plans without a
+/// 5-hour limit report none) every loaded account of the provider says so.
+fn hide_five_for(s: &State, kind: Provider) -> bool {
+    let mut loaded = s.accounts.iter().filter(|a| a.kind == kind).filter_map(|a| a.usage).peekable();
+    let off = if kind == Provider::Codex { s.codex_hide_five } else { s.hide_five };
+    off || (loaded.peek().is_some() && loaded.all(|u| !u.has_five_hour))
+}
+
+/// Everything a frame depends on; the widget redraws when it changes.
+fn render_key(s: &State, h: i32, vertical: bool, dpi: u32) -> RenderKey {
+    let pct = |v: Option<f64>| v.map(|p| p.round() as i64);
+    RenderKey {
+        h,
+        vertical,
+        dpi,
+        dark: s.dark,
+        hover: s.hover,
+        rows: s
+            .accounts
+            .iter()
+            .map(|a| {
+                let r = row_of(a);
+                (a.kind as u8, pct(r.five), pct(r.week), pct(r.fable), r.stale, r.roll.map(|(_, t)| (t * 1000.0) as u32))
+            })
+            .collect(),
+        ram: pct(s.ram.map(|r| r.0)),
+        cpu: pct(s.cpu),
+        drives: s.drives.iter().map(|&(n, used, total)| (n, (used as f64 * 100.0 / total as f64).round() as i64)).collect(),
+        hide_five: [hide_five_for(s, Provider::Claude), hide_five_for(s, Provider::Codex)],
+        settings: s.settings_gen,
+    }
+}
+
+/// Each shown section's model, left to right, and what clicking it opens.
+pub(crate) fn build_models(s: &State) -> Vec<(render::Model, Target)> {
+    let model = |look: Look, rows: Vec<render::Row>, mark: render::Mark, labels: [&'static str; 3], hide: [bool; 3], fixed: bool| {
+        render::Model {
+            rows,
+            hover: false, // drawn once, under all sections, by compose()
+            dark: s.dark,
+            show_left: look.show_left,
+            font_size: s.font_size,
+            icon_size: s.icon_size,
+            mark: if look.hide_icon { render::Mark::None } else { mark },
+            labels,
+            fixed,
+            rings: look.rings,
+            ring_text: look.ring_text,
+            hide_labels: look.hide_labels,
+            hide_five: hide[0],
+            hide_week: hide[1],
+            hide_fable: hide[2],
+            rows_per_col: s.rows_per_col as usize,
+            last: false,
+            texts: None,
+        }
+    };
+    let rows_of = |kind: Provider| -> Vec<render::Row> { s.accounts.iter().filter(|a| a.kind == kind).map(row_of).collect() };
+    let usage_labels = ["5h", "W", "F"];
+    let claude_mark = if s.pixel_icon { render::Mark::Pixel } else { render::Mark::Claude };
+    let claude_hide = [hide_five_for(s, Provider::Claude), s.hide_week, s.hide_fable];
+    let mut models = Vec::new();
+    let claude_rows = rows_of(Provider::Claude);
+    if !claude_rows.is_empty() && !s.hide_claude {
+        models.push((model(s.looks[CLAUDE], claude_rows, claude_mark, usage_labels, claude_hide, false), Target::Usage(Provider::Claude)));
+    }
+    let codex_rows = rows_of(Provider::Codex);
+    if !codex_rows.is_empty() && !s.hide_codex {
+        let hide = [hide_five_for(s, Provider::Codex), s.codex_hide_week, true];
+        models.push((model(s.looks[CODEX], codex_rows, render::Mark::Codex, usage_labels, hide, false), Target::Usage(Provider::Codex)));
+    }
+    // RAM and CPU: one fixed-width number each. The icon stands in for the label.
+    let ram = if s.hide_ram { None } else { s.ram.map(|r| r.0) };
+    let cpu = if s.hide_cpu { None } else { s.cpu };
+    for (i, v, mark, label) in [(RAM, ram, render::Mark::Ram, "RAM"), (CPU, cpu, render::Mark::Cpu, "CPU")] {
+        let Some(p) = v else { continue };
+        let look = s.looks[i];
+        let row = render::Row { five: Some(p), week: None, fable: None, roll: None, stale: false };
+        let labels = if look.hide_icon { [label, "", ""] } else { ["", "", ""] };
+        let m = model(look, vec![row], mark, labels, [false, true, true], true);
+        models.push((render::Model { hide_labels: !look.hide_icon, ..m }, Target::TaskManager));
+    }
+    let drives = shown_drives(&s.drives, s.hide_drives, s.hidden_drives);
+    if !drives.is_empty() {
+        // One group per drive, labelled by its letter (always: the numbers need it).
+        // "Remaining" shows free space.
+        let p = |i: usize| drives.get(i).map(|d| d.1);
+        let row = render::Row { five: p(0), week: p(1), fable: p(2), roll: None, stale: false };
+        let label = |i: usize| drives.get(i).map_or("", |d| DRIVE_LETTERS[d.0 as usize]);
+        let hide = [false, drives.len() < 2, drives.len() < 3];
+        let m = model(s.looks[DRIVES], vec![row], render::Mark::Drive, [label(0), label(1), label(2)], hide, false);
+        // Sizes instead of percentages: used, or free with "remaining". Colours still follow % used.
+        let texts = s.drive_size.then(|| {
+            let size = |i: usize| {
+                let Some(&(n, _)) = drives.get(i) else { return String::new() };
+                let &(_, used, total) = s.drives.iter().find(|d| d.0 == n).unwrap_or(&(n, 0, 0));
+                size_text(if s.looks[DRIVES].show_left { total - used } else { used })
+            };
+            [size(0), size(1), size(2)]
+        });
+        models.push((render::Model { hide_labels: false, texts, ..m }, Target::ThisPc));
+    }
+    if models.is_empty() {
+        // Something to right-click.
+        models.push((model(s.looks[CLAUDE], Vec::new(), claude_mark, usage_labels, claude_hide, false), Target::Usage(Provider::Claude)));
+    }
+    if let Some((m, _)) = models.last_mut() {
+        m.last = true;
+    }
+    models
 }
 
 unsafe fn present(widget: HWND, f: &render::Frame) {
@@ -739,10 +911,10 @@ fn update_tooltip() {
 /// Short tooltip: one block per provider (only the limits the widget shows),
 /// then RAM · CPU, then when the numbers were fetched.
 fn tooltip_text(s: &State) -> String {
-    let limit = |name: &str, l: Option<api::Limit>| -> String {
+    let limit = |name: &str, l: Option<api::Limit>, show_left: bool| -> String {
         let Some(l) = l else { return format!("  {name}  –") };
         let used = l.percent.round().clamp(0.0, 100.0) as i64;
-        let pct = if s.show_left { format!("{}% left", 100 - used) } else { format!("{used}% used") };
+        let pct = if show_left { format!("{}% left", 100 - used) } else { format!("{used}% used") };
         match l.resets_at {
             None => format!("  {name}  {pct}"),
             // A clock time, plus a countdown when it's within a day.
@@ -765,14 +937,17 @@ fn tooltip_text(s: &State) -> String {
         prev = Some(a.kind);
         lines.push(format!("{} · {}", a.kind.name(), a.label));
         if let Some(u) = a.usage {
-            if u.has_five_hour && !s.hide_five {
-                lines.push(limit("5-hour", u.five_hour));
+            let codex = a.kind == Provider::Codex;
+            let left = s.looks[if codex { CODEX } else { CLAUDE }].show_left;
+            let (hide_five, hide_week) = if codex { (s.codex_hide_five, s.codex_hide_week) } else { (s.hide_five, s.hide_week) };
+            if u.has_five_hour && !hide_five {
+                lines.push(limit("5-hour", u.five_hour, left));
             }
-            if !s.hide_week {
-                lines.push(limit("Weekly", u.weekly));
+            if !hide_week {
+                lines.push(limit("Weekly", u.weekly, left));
             }
-            if a.kind == Provider::Claude && u.fable.is_some() && !s.hide_fable {
-                lines.push(limit("Fable", u.fable));
+            if !codex && u.fable.is_some() && !s.hide_fable {
+                lines.push(limit("Fable", u.fable, left));
             }
             if u.from_log {
                 lines.push("  From Codex's logs; live again once Codex signs in".into());
@@ -792,12 +967,19 @@ fn tooltip_text(s: &State) -> String {
         let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
         system.push(format!("RAM {:.1} / {:.1} GB", gb(used), gb(total)));
     }
-    if let Some(cpu) = s.cpu {
+    if let (false, Some(cpu)) = (s.hide_cpu, s.cpu) {
         system.push(format!("CPU {}%", cpu.round() as i64));
     }
     if !system.is_empty() {
         lines.push(String::new());
         lines.push(system.join(" · "));
+    }
+    if !s.hide_drives && !s.drives.is_empty() {
+        // Every internal drive, including ones turned off or past the section's room.
+        lines.push(String::new());
+        for &(n, used, total) in &s.drives {
+            lines.push(format!("{}: {} free of {}", DRIVE_LETTERS[n as usize], size_text(total - used), size_text(total)));
+        }
     }
     if let Some(t) = oldest {
         lines.push(format!("Updated {}", local_time(t, false)));
@@ -842,7 +1024,7 @@ fn local_time(unix: i64, with_day: bool) -> String {
 
 // ---------- settings ----------
 
-fn system_dark() -> bool {
+pub(crate) fn system_dark() -> bool {
     let mut v: u32 = 1;
     let mut size = 4u32;
     let r = unsafe {
@@ -866,19 +1048,11 @@ fn read_setting(name: &str) -> Option<u32> {
     (r == ERROR_SUCCESS).then_some(v)
 }
 
-fn write_setting(name: &str, v: u32) {
+pub(crate) fn write_setting(name: &str, v: u32) {
     unsafe {
         RegSetKeyValueW(HKEY_CURRENT_USER, SETTINGS_KEY, wide(name).as_ptr(), REG_DWORD,
             &v as *const u32 as *const _, 4);
     }
-}
-
-fn set_interval(secs: u32) {
-    with(|s| s.interval = secs);
-    write_setting("IntervalSeconds", secs);
-    // Apply right away: fetch now, then keep the new pace. Accounts that are
-    // mid-fetch pick up the new pace when they finish.
-    start_fetch_all();
 }
 
 fn read_string_setting(name: &str) -> Option<String> {
@@ -915,7 +1089,7 @@ fn write_string_setting(name: &str, v: &str) {
 /// Saved account folders, separated by `|` (which paths can't contain).
 /// Claude: with nothing saved, the folder Claude Code uses by default.
 /// Codex: until the list is first saved, Codex's default folder if it holds a login.
-fn load_account_dirs() -> Vec<(PathBuf, Provider)> {
+pub(crate) fn load_account_dirs() -> Vec<(PathBuf, Provider)> {
     let split = |v: String| -> Vec<PathBuf> {
         v.split('|').filter(|d| !d.is_empty()).map(PathBuf::from).collect()
     };
@@ -1044,7 +1218,7 @@ unsafe fn remove_account(index: usize) {
     update_tooltip();
 }
 
-fn autostart_enabled() -> bool {
+pub(crate) fn autostart_enabled() -> bool {
     let mut size = 0u32;
     unsafe {
         RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE, RRF_RT_REG_SZ,
@@ -1052,7 +1226,7 @@ fn autostart_enabled() -> bool {
     }
 }
 
-fn set_autostart(on: bool) {
+pub(crate) fn set_autostart(on: bool) {
     unsafe {
         if on {
             let exe = std::env::current_exe().unwrap_or_default();
@@ -1089,50 +1263,12 @@ unsafe fn show_menu() {
     // Settings first, then the everyday actions next to Exit, closest to the
     // taskbar where the menu opens.
     let tick = |id: usize| if setting_checked(id) == Some(true) { MF_STRING | MF_CHECKED } else { MF_STRING };
-    // Show: what's on the taskbar.
+    // Show: quick on/off for each section. Everything else is in Settings.
     let show = CreatePopupMenu();
-    // Sections first, then which limits each usage section shows.
-    let (no_claude, no_usage) = with(|s| (s.hide_claude, s.hide_claude && s.hide_codex));
-    let grey = |flags: MENU_ITEM_FLAGS, off: bool| if off { flags | MF_GRAYED } else { flags };
-    AppendMenuW(show, MF_STRING | MF_GRAYED, 0, w!("Sections"));
-    AppendMenuW(show, tick(ID_HIDE_CLAUDE), ID_HIDE_CLAUDE, w!("Claude"));
-    AppendMenuW(show, tick(ID_HIDE_CODEX), ID_HIDE_CODEX, w!("Codex"));
-    AppendMenuW(show, tick(ID_HIDE_RAM), ID_HIDE_RAM, w!("RAM"));
-    AppendMenuW(show, MF_SEPARATOR, 0, null());
-    AppendMenuW(show, MF_STRING | MF_GRAYED, 0, w!("Limits"));
-    AppendMenuW(show, grey(tick(ID_HIDE_FIVE), no_usage), ID_HIDE_FIVE, w!("5-hour"));
-    AppendMenuW(show, grey(tick(ID_HIDE_WEEK), no_usage), ID_HIDE_WEEK, w!("Weekly"));
-    AppendMenuW(show, grey(tick(ID_HIDE_FABLE), no_claude), ID_HIDE_FABLE, w!("Fable (Claude only)"));
+    for (i, name) in SECTION_NAMES.iter().enumerate() {
+        AppendMenuW(show, tick(ID_SHOW_BASE + i), ID_SHOW_BASE + i, wide(name).as_ptr());
+    }
     AppendMenuW(menu, MF_POPUP, show as usize, w!("Show"));
-
-    // Appearance: how it looks.
-    let look = CreatePopupMenu();
-    let fonts = CreatePopupMenu();
-    for (i, (_, label)) in FONT_SIZES.iter().enumerate() {
-        AppendMenuW(fonts, tick(ID_FONT_BASE + i), ID_FONT_BASE + i, wide(label).as_ptr());
-    }
-    AppendMenuW(look, MF_POPUP, fonts as usize, w!("Font size"));
-    let icon = CreatePopupMenu();
-    AppendMenuW(icon, tick(ID_HIDE_ICON), ID_HIDE_ICON, w!("Hide icon"));
-    AppendMenuW(icon, tick(ID_CLAUDE_ICON), ID_CLAUDE_ICON, w!("Show Claude icon"));
-    AppendMenuW(icon, tick(ID_PIXEL_ICON), ID_PIXEL_ICON, w!("Show pixel Claude icon"));
-    AppendMenuW(icon, MF_SEPARATOR, 0, null());
-    let sizes = CreatePopupMenu();
-    for (i, (_, label)) in ICON_SIZES.iter().enumerate() {
-        AppendMenuW(sizes, tick(ID_ICON_SIZE_BASE + i), ID_ICON_SIZE_BASE + i, wide(label).as_ptr());
-    }
-    AppendMenuW(icon, MF_POPUP, sizes as usize, w!("Icon size"));
-    AppendMenuW(look, MF_POPUP, icon as usize, w!("Icon"));
-    AppendMenuW(look, MF_SEPARATOR, 0, null());
-    AppendMenuW(look, tick(ID_SHOW_LEFT), ID_SHOW_LEFT, w!("Show remaining instead of used"));
-    AppendMenuW(look, tick(ID_HIDE_LABELS), ID_HIDE_LABELS, w!("Hide labels"));
-    AppendMenuW(look, tick(ID_ROLL), ID_ROLL, w!("Roll numbers when they change"));
-    AppendMenuW(look, MF_SEPARATOR, 0, null());
-    AppendMenuW(look, tick(ID_RINGS), ID_RINGS, w!("Show usage rings"));
-    AppendMenuW(look, tick(ID_RING_TEXT), ID_RING_TEXT, w!("Numbers inside the rings"));
-    AppendMenuW(look, MF_SEPARATOR, 0, null());
-    AppendMenuW(look, tick(ID_ON_LEFT), ID_ON_LEFT, w!("Place on the left side"));
-    AppendMenuW(menu, MF_POPUP, look as usize, w!("Appearance"));
 
     let accounts = CreatePopupMenu();
     AppendMenuW(accounts, MF_STRING, ID_ADD_ACCOUNT, w!("Add account…"));
@@ -1146,23 +1282,8 @@ unsafe fn show_menu() {
         let text = wide(&format!("Remove {}", label.replace('&', "&&")));
         AppendMenuW(accounts, removable, ID_REMOVE_BASE + i, text.as_ptr());
     }
-    // Only matters with more than one account.
-    let per = CreatePopupMenu();
-    for n in 1..=render::MAX_ROWS_PER_COLUMN {
-        let text = wide(&n.to_string());
-        AppendMenuW(per, tick(ID_PER_COL_BASE + n), ID_PER_COL_BASE + n, text.as_ptr());
-    }
-    let per_flags = if labels.len() > 1 { MF_POPUP } else { MF_POPUP | MF_GRAYED };
-    AppendMenuW(accounts, MF_SEPARATOR, 0, null());
-    AppendMenuW(accounts, per_flags, per as usize, w!("Accounts per column"));
     AppendMenuW(menu, MF_POPUP, accounts as usize, w!("Accounts"));
-
-    let sub = CreatePopupMenu();
-    for (i, (_, label)) in INTERVALS.iter().enumerate() {
-        AppendMenuW(sub, tick(ID_INTERVAL_BASE + i), ID_INTERVAL_BASE + i, wide(label).as_ptr());
-    }
-    AppendMenuW(menu, MF_POPUP, sub as usize, w!("Update every"));
-    AppendMenuW(menu, tick(ID_AUTOSTART), ID_AUTOSTART, w!("Start with Windows"));
+    AppendMenuW(menu, MF_STRING, ID_SETTINGS, w!("Settings…"));
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
     AppendMenuW(menu, MF_STRING, ID_REFRESH, w!("Refresh now"));
     AppendMenuW(menu, MF_STRING, ID_OPEN, w!("Open Claude usage page"));
@@ -1194,6 +1315,7 @@ unsafe fn show_menu() {
         }
         ID_OPEN => open_usage_page(),
         ID_OPEN_CODEX => open_url(CODEX_USAGE_URL),
+        ID_SETTINGS => open_settings(),
         ID_EXIT => quit(),
         _ => {}
     }
@@ -1206,189 +1328,20 @@ thread_local! {
 
 /// Whether a setting's menu item is ticked, or None for items that are not settings.
 fn setting_checked(id: usize) -> Option<bool> {
-    if id == ID_AUTOSTART {
-        return Some(autostart_enabled());
-    }
-    with(|s| {
-        Some(match id {
-            ID_SHOW_LEFT => s.show_left,
-            ID_RINGS => s.rings,
-            ID_RING_TEXT => s.ring_text,
-            ID_ROLL => s.roll,
-            ID_HIDE_LABELS => s.hide_labels,
-            ID_ON_LEFT => s.on_left,
-            // Ticked limits are shown.
-            ID_HIDE_FIVE => !s.hide_five,
-            ID_HIDE_WEEK => !s.hide_week,
-            ID_HIDE_FABLE => !s.hide_fable,
-            ID_HIDE_CLAUDE => !s.hide_claude,
-            ID_HIDE_CODEX => !s.hide_codex,
-            ID_HIDE_RAM => !s.hide_ram,
-            ID_HIDE_ICON => s.hide_icon,
-            ID_CLAUDE_ICON => !s.hide_icon && !s.pixel_icon,
-            ID_PIXEL_ICON => !s.hide_icon && s.pixel_icon,
-            id if (ID_PER_COL_BASE + 1..=ID_PER_COL_BASE + render::MAX_ROWS_PER_COLUMN).contains(&id) => {
-                s.rows_per_col as usize == id - ID_PER_COL_BASE
-            }
-            id if (ID_FONT_BASE..ID_FONT_BASE + FONT_SIZES.len()).contains(&id) => {
-                s.font_size == FONT_SIZES[id - ID_FONT_BASE].0
-            }
-            id if (ID_ICON_SIZE_BASE..ID_ICON_SIZE_BASE + ICON_SIZES.len()).contains(&id) => {
-                s.icon_size == ICON_SIZES[id - ID_ICON_SIZE_BASE].0
-            }
-            id if (ID_INTERVAL_BASE..ID_INTERVAL_BASE + INTERVALS.len()).contains(&id) => {
-                s.interval == INTERVALS[id - ID_INTERVAL_BASE].0
-            }
-            _ => return None,
-        })
-    })
+    let i = id.checked_sub(ID_SHOW_BASE).filter(|i| *i < SECTIONS.len())?;
+    Some(with(|s| !section_hidden(s, i)))
 }
 
 /// Applies a setting picked in the menu. Returns false for other items.
 fn apply_setting(id: usize) -> bool {
-    match id {
-        ID_AUTOSTART => set_autostart(!autostart_enabled()),
-        ID_SHOW_LEFT => {
-            let on = with(|s| {
-                s.show_left = !s.show_left;
-                s.show_left
-            });
-            write_setting("ShowRemaining", on as u32);
-            ensure_widget();
-        }
-        ID_RINGS => {
-            let on = with(|s| {
-                s.rings = !s.rings;
-                s.rings
-            });
-            write_setting("Rings", on as u32);
-            ensure_widget();
-        }
-        ID_RING_TEXT => {
-            let on = with(|s| {
-                s.ring_text = !s.ring_text;
-                s.ring_text
-            });
-            write_setting("RingText", on as u32);
-            ensure_widget();
-        }
-        ID_ROLL => {
-            let on = with(|s| {
-                s.roll = !s.roll;
-                s.roll
-            });
-            write_setting("RollNumbers", on as u32);
-        }
-        ID_HIDE_FIVE => {
-            let on = with(|s| {
-                s.hide_five = !s.hide_five;
-                s.hide_five
-            });
-            write_setting("HideFiveHour", on as u32);
-            ensure_widget();
-        }
-        ID_HIDE_WEEK => {
-            let on = with(|s| {
-                s.hide_week = !s.hide_week;
-                s.hide_week
-            });
-            write_setting("HideWeekly", on as u32);
-            ensure_widget();
-        }
-        ID_HIDE_FABLE => {
-            let on = with(|s| {
-                s.hide_fable = !s.hide_fable;
-                s.hide_fable
-            });
-            write_setting("HideFable", on as u32);
-            ensure_widget();
-        }
-        ID_HIDE_CLAUDE => {
-            let on = with(|s| {
-                s.hide_claude = !s.hide_claude;
-                s.hide_claude
-            });
-            write_setting("HideClaude", on as u32);
-            ensure_widget();
-            update_tooltip();
-        }
-        ID_HIDE_CODEX => {
-            let on = with(|s| {
-                s.hide_codex = !s.hide_codex;
-                s.hide_codex
-            });
-            write_setting("HideCodex", on as u32);
-            ensure_widget();
-            update_tooltip();
-        }
-        ID_HIDE_RAM => {
-            let on = with(|s| {
-                s.hide_ram = !s.hide_ram;
-                s.hide_ram
-            });
-            write_setting("HideRam", on as u32);
-            ensure_widget();
-            update_tooltip();
-        }
-        ID_ON_LEFT => {
-            let on = with(|s| {
-                s.on_left = !s.on_left;
-                s.on_left
-            });
-            write_setting("OnLeft", on as u32);
-            ensure_widget();
-        }
-        ID_HIDE_LABELS => {
-            let on = with(|s| {
-                s.hide_labels = !s.hide_labels;
-                s.hide_labels
-            });
-            write_setting("HideLabels", on as u32);
-            ensure_widget();
-        }
-        id @ (ID_HIDE_ICON | ID_CLAUDE_ICON | ID_PIXEL_ICON) => {
-            let (hide, pixel) = (id == ID_HIDE_ICON, id == ID_PIXEL_ICON);
-            with(|s| {
-                s.hide_icon = hide;
-                // Hiding keeps the chosen mark for when it is shown again.
-                if !hide {
-                    s.pixel_icon = pixel;
-                }
-            });
-            write_setting("HideIcon", hide as u32);
-            if !hide {
-                write_setting("PixelIcon", pixel as u32);
-            }
-            ensure_widget();
-        }
-        id if (ID_PER_COL_BASE + 1..=ID_PER_COL_BASE + render::MAX_ROWS_PER_COLUMN).contains(&id) => {
-            let n = (id - ID_PER_COL_BASE) as u32;
-            with(|s| s.rows_per_col = n);
-            write_setting("AccountsPerColumn", n);
-            ensure_widget();
-            update_tooltip();
-        }
-        id if (ID_ICON_SIZE_BASE..ID_ICON_SIZE_BASE + ICON_SIZES.len()).contains(&id) => {
-            let px = ICON_SIZES[id - ID_ICON_SIZE_BASE].0;
-            with(|s| s.icon_size = px);
-            write_setting("IconSize", px);
-            ensure_widget();
-        }
-        id if (ID_FONT_BASE..ID_FONT_BASE + FONT_SIZES.len()).contains(&id) => {
-            let px = FONT_SIZES[id - ID_FONT_BASE].0;
-            with(|s| s.font_size = px);
-            write_setting("FontSize", px);
-            ensure_widget();
-        }
-        id if (ID_INTERVAL_BASE..ID_INTERVAL_BASE + INTERVALS.len()).contains(&id) => {
-            set_interval(INTERVALS[id - ID_INTERVAL_BASE].0);
-        }
-        _ => return false,
-    }
+    let Some(i) = id.checked_sub(ID_SHOW_BASE).filter(|i| *i < SECTIONS.len()) else { return false };
+    let hidden = with(|s| section_hidden(s, i));
+    write_setting(SECTION_HIDE_KEYS[i], !hidden as u32);
+    reload_settings();
     true
 }
 
-/// Brings the ticks up to date, and greys out "Numbers inside the rings" without rings.
+/// Brings the ticks up to date.
 unsafe fn refresh_menu(menu: HMENU) {
     for i in 0..GetMenuItemCount(menu) {
         let sub = GetSubMenu(menu, i);
@@ -1396,15 +1349,16 @@ unsafe fn refresh_menu(menu: HMENU) {
             refresh_menu(sub);
             continue;
         }
-        let id = GetMenuItemID(menu, i) as usize;
-        if let Some(on) = setting_checked(id) {
+        if let Some(on) = setting_checked(GetMenuItemID(menu, i) as usize) {
             CheckMenuItem(menu, i as u32, MF_BYPOSITION | if on { MF_CHECKED } else { MF_UNCHECKED });
         }
-        if id == ID_RING_TEXT {
-            let on = with(|s| s.rings);
-            EnableMenuItem(menu, i as u32, MF_BYPOSITION | if on { MF_ENABLED } else { MF_GRAYED });
-        }
     }
+}
+
+/// Opens the settings window: this exe again, in settings mode.
+fn open_settings() {
+    let exe = wide(&std::env::current_exe().unwrap_or_default().to_string_lossy());
+    unsafe { ShellExecuteW(null_mut(), w!("open"), exe.as_ptr(), w!("--settings"), null(), SW_SHOWNORMAL) };
 }
 
 /// Runs inside the menu's loop. A click on a setting applies it and updates
@@ -1464,12 +1418,19 @@ unsafe extern "system" fn ctl_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     ensure_widget(); // the next frame, or the settled numbers
                 }
                 T_RAM => {
-                    sample_cpu();
-                    if sample_ram() {
+                    if sample_cpu() | sample_ram() {
                         ensure_widget();
                     }
                     // Keep RAM/CPU current for the next time the tooltip opens. Not while it's
                     // open: swapping the text of a visible tooltip collapses it to one cut-off line.
+                    if IsWindowVisible(with(|s| s.tip)) == 0 {
+                        update_tooltip();
+                    }
+                }
+                T_DRIVES => {
+                    if sample_drives() {
+                        ensure_widget();
+                    }
                     if IsWindowVisible(with(|s| s.tip)) == 0 {
                         update_tooltip();
                     }
@@ -1502,6 +1463,10 @@ unsafe extern "system" fn ctl_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 id if id >= T_FETCH_BASE => start_fetch((id - T_FETCH_BASE) as u32),
                 _ => {}
             }
+            0
+        }
+        WM_APP_RELOAD => {
+            reload_settings();
             0
         }
         WM_APP_RESULT => {
@@ -1560,11 +1525,13 @@ unsafe extern "system" fn widget_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             0
         }
         WM_LBUTTONUP => {
-            // The section under the cursor: its usage page, or Task Manager for RAM.
-            let x = (lp & 0xFFFF) as i16 as i32;
-            match with(|s| s.sections.iter().find(|(right, _)| x < *right).map(|(_, p)| *p)) {
-                Some(Some(Provider::Codex)) => open_url(CODEX_USAGE_URL),
-                Some(None) => {
+            // The section under the cursor: its usage page, Task Manager for RAM/CPU, This PC for drives.
+            let (x, y) = ((lp & 0xFFFF) as i16 as i32, ((lp >> 16) & 0xFFFF) as i16 as i32);
+            let at = if with(|s| s.rendered.as_ref().is_some_and(|k| k.vertical)) { y } else { x };
+            match with(|s| s.sections.iter().find(|(end, _)| at < *end).map(|(_, p)| *p)) {
+                Some(Target::Usage(Provider::Codex)) => open_url(CODEX_USAGE_URL),
+                Some(Target::ThisPc) => open_url("shell:MyComputerFolder"),
+                Some(Target::TaskManager) => {
                     ShellExecuteW(null_mut(), w!("open"), w!("taskmgr.exe"), null(), null(), SW_SHOWNORMAL);
                 }
                 _ => open_usage_page(),
@@ -1585,5 +1552,31 @@ unsafe extern "system" fn widget_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             0
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shown_drives_skips_hidden_and_caps_at_three() {
+        let gb = 1u64 << 30;
+        let all = [(2, 64 * gb, 100 * gb), (3, 97 * gb, 100 * gb), (4, 85 * gb, 100 * gb), (5, gb, 100 * gb)];
+        let letters = |v: Vec<(u8, f64)>| v.into_iter().map(|d| d.0).collect::<Vec<_>>();
+        assert_eq!(letters(shown_drives(&all, false, 0)), [2, 3, 4]);
+        assert_eq!(letters(shown_drives(&all, false, 1 << 3)), [2, 4, 5]);
+        assert!(shown_drives(&all, true, 0).is_empty());
+        assert_eq!(shown_drives(&all[1..2], false, 0)[0].1.round(), 97.0);
+    }
+
+    #[test]
+    fn size_text_matches_explorer() {
+        let gb = 1u64 << 30;
+        assert_eq!(size_text(26 * gb + gb / 5), "26.2 GB");
+        assert_eq!(size_text(336 * gb), "336 GB");
+        assert_eq!(size_text(976 * gb), "976 GB");
+        assert_eq!(size_text(1925 * gb), "1.88 TB");
+        assert_eq!(size_text(gb / 2), "0.50 GB");
     }
 }
